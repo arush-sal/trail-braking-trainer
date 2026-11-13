@@ -74,8 +74,9 @@ test('eyes-free MOCK guided session: keyboard start, overlap alert, session comp
   expect(t.alerts.map((a) => a.kind)).toEqual(expect.arrayContaining(['round-start', 'round-end', 'session-complete']));
   // Spoken cues were issued (browser speech output itself is not verified here).
   expect(t.phrases[0]).toBe('Full trail brake. 2 rounds. 1 second rest.');
-  expect(t.phrases).toEqual(expect.arrayContaining(['1', 'Go', 'Round 1 complete.', 'Round 2 complete.']));
-  expect(t.phrases.at(-1)).toMatch(/^Session complete\. 2 of 2 rounds completed\./);
+  expect(t.phrases).toEqual(expect.arrayContaining(['1', 'Go', expect.stringMatching(/^Round 1: completed\. Brake mean error \d/), expect.stringMatching(/^Round 2: completed\./)]));
+  expect(t.phrases.at(-1)).toMatch(/^Session finished: 2 rounds, 2 completed\./);
+  expect(t.phrases.filter((p) => p.length > 250)).toEqual([]); // spoken feedback stays short enough to hear
   expect(t.phrases.join(' ')).not.toMatch(/overlap/i);
 
   expect(foreign()).toEqual([]);
@@ -105,7 +106,7 @@ test('keyboard-only commands: pause, resume, complete (self-paced), skip, stop',
 
   const t = await hook(page);
   expect(t.events.filter((e) => e.kind === 'roundEnded').map((e) => e.outcome)).toEqual(['completedManual', 'skipped', 'aborted']);
-  expect(t.phrases).toEqual(expect.arrayContaining(['Round 1 complete.', 'Round 2 skipped.', 'Session stopped.']));
+  expect(t.phrases).toEqual(expect.arrayContaining([expect.stringMatching(/^Round 1: completed\./), expect.stringMatching(/^Round 2: skipped\./), 'Session stopped.']));
   expect(t.phrases.filter((p) => p.startsWith('Cannot'))).toEqual([]);
   expect(foreign()).toEqual([]);
 });

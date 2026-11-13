@@ -17,6 +17,7 @@ import (
 	"github.com/arush-sal/trail-braking-trainer/core/drills"
 	"github.com/arush-sal/trail-braking-trainer/core/engine"
 	"github.com/arush-sal/trail-braking-trainer/core/input"
+	"github.com/arush-sal/trail-braking-trainer/core/metrics"
 	"github.com/arush-sal/trail-braking-trainer/core/session"
 )
 
@@ -520,4 +521,94 @@ func decodeStrict(data []byte, v any) error {
 		return fmt.Errorf("invalid JSON: %w", err)
 	}
 	return nil
+}
+
+// Results returns the metrics and traces of the current session's finished
+// attempts (docs/results-contract.md). An open attempt is not included
+// until it ends. Results live only in this Runner and are discarded by the
+// next Start (R-027). Metrics are always computed from the full-resolution
+// data, but full traces (unbounded by the display cap; tens of MB of JSON
+// for long rounds) are returned only when includeFull is set; by default a
+// round carries its downsampled display traces only.
+func (r *Runner) Results(includeFull bool) metrics.SessionResults {
+	if r.sess == nil {
+		return metrics.SessionResults{APIVersion: APIVersion, Mode: "freeform", Rounds: []metrics.RoundResult{},
+			Consistency: []metrics.Metric{}, Recommendations: []metrics.Recommendation{}, Error: errNoSession.Error()}
+	}
+	res := metrics.Analyze(metrics.Input{
+		Drill: r.drill, Controls: r.controls, Attempts: r.sess.Attempts(),
+		SelfPaced: r.cfg.Timing == session.TimingSelfPaced, NoiseFloor: r.oc.NoiseFloor,
+	})
+	res.APIVersion = APIVersion
+	if !includeFull {
+		for i := range res.Rounds {
+			res.Rounds[i].Traces = nil
+		}
+	}
+	return res
+}
+
+// MaxPreviewSamples caps PreviewSamples.
+const MaxPreviewSamples = 500
+
+// Preview is a drill's desired trajectory for a setup preview: x is
+// elapsed ms (timed, via TargetAt) or normalized progress u in [0,1]
+// (self-paced, via ShapeAt; there is no time axis).
+type Preview struct {
+	APIVersion int                      `json:"apiVersion"`
+	Timed      bool                     `json:"timed"`
+	XUnit      string                   `json:"xUnit"` // ms | u
+	X          []float64                `json:"x"`
+	Values     map[input.Axis][]float64 `json:"values"`
+	Phases     []PreviewPhase           `json:"phases"`
+	Error      string                   `json:"error,omitempty"`
+}
+
+// PreviewPhase is a phase start on the preview's x axis.
+type PreviewPhase struct {
+	Index  int     `json:"index"`
+	Name   string  `json:"name,omitempty"`
+	StartX float64 `json:"startX"`
+}
+
+// PreviewSamples validates a drill (all channels assumed available) and
+// samples its desired values at n evenly spaced points, n clamped to
+// [2, MaxPreviewSamples].
+func PreviewSamples(data []byte, n int) Preview {
+	p := Preview{APIVersion: APIVersion, X: []float64{}, Values: map[input.Axis][]float64{}, Phases: []PreviewPhase{}}
+	var d drills.DrillDefinition
+	err := decodeStrict(data, &d)
+	if err == nil {
+		err = drills.Validate(d, allAxes)
+	}
+	if err != nil {
+		p.Error = err.Error()
+		return p
+	}
+	n = min(max(n, 2), MaxPreviewSamples)
+	p.Timed, p.XUnit = d.Timing == drills.Timed, "u"
+	span := 1.0
+	if p.Timed {
+		p.XUnit, span = "ms", 0
+		for _, ph := range d.Phases {
+			span += ph.DurationMs
+		}
+	}
+	for i := range n {
+		x := span * float64(i) / float64(n-1)
+		var s drills.Sample
+		if p.Timed {
+			s, _ = drills.TargetAt(d, x)
+		} else {
+			s = drills.ShapeAt(d, x)
+		}
+		p.X = append(p.X, x)
+		for _, a := range d.Controls {
+			p.Values[a] = append(p.Values[a], s.Values[a])
+		}
+	}
+	for i, f := range drills.PhaseStarts(d) {
+		p.Phases = append(p.Phases, PreviewPhase{Index: i, Name: d.Phases[i].Name, StartX: span * f})
+	}
+	return p
 }

@@ -193,7 +193,7 @@ export function App() {
         </button>{' '}
         Session audio: <strong data-testid="session-audio">{audioState}</strong>
       </p>
-      {session ? <SessionPanel runner={session.runner} bridge={session.bridge} /> : (
+      {session ? <SessionPanel runner={session.runner} bridge={session.bridge} previewSamples={session.bridge.previewSamples} /> : (
         <section aria-labelledby="session-h">
           <h2 id="session-h">Session</h2>
           <p>Session needs the core (WASM); see Core status below.</p>

@@ -52,6 +52,13 @@ func TargetAt(d DrillDefinition, tMs float64) (Sample, error) {
 // (clamped) of a validated drill. Phases are weighted by DurationMs when set,
 // otherwise equally. For a timed drill ShapeAt(d, t/total) == TargetAt(d, t).
 func ShapeAt(d DrillDefinition, u float64) Sample {
+	w, total := shapeWeights(d)
+	return sampleAt(d, w, u*total)
+}
+
+// shapeWeights are the normalized-progress phase weights: DurationMs when
+// set, otherwise equal.
+func shapeWeights(d DrillDefinition) ([]float64, float64) {
 	w := make([]float64, len(d.Phases))
 	var total float64
 	for i, p := range d.Phases {
@@ -64,7 +71,20 @@ func ShapeAt(d DrillDefinition, u float64) Sample {
 		}
 		total = float64(len(w))
 	}
-	return sampleAt(d, w, u*total)
+	return w, total
+}
+
+// PhaseStarts returns each phase's start as a fraction of the drill in
+// [0,1), weighted exactly as ShapeAt (so for a timed drill, times are
+// fraction * total duration).
+func PhaseStarts(d DrillDefinition) []float64 {
+	w, total := shapeWeights(d)
+	out, acc := make([]float64, len(w)), 0.0
+	for i, wi := range w {
+		out[i] = acc / total
+		acc += wi
+	}
+	return out
 }
 
 // sampleAt locates x on the cumulative phase weights w. Phase i owns

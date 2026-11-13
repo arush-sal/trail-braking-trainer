@@ -23,6 +23,8 @@ function fakeApi() {
     snapshot: (t) => (calls.push(`snapshot ${t}`), JSON.stringify(snap(state))),
     presets: () => JSON.stringify({ apiVersion: 1, difficulties: {} }),
     validateDrill: (d) => (calls.push(`validateDrill ${d}`), ok()),
+    results: (full) => (calls.push(`results ${full}`), JSON.stringify({ apiVersion: 1, mode: 'freeform', rounds: [], consistency: [], recommendations: [] })),
+    previewSamples: (d, n) => (calls.push(`previewSamples ${n} ${d}`), JSON.stringify({ apiVersion: 1, timed: true, xUnit: 'ms', x: [0, 1], values: { brake: [0, 1] }, phases: [] })),
   };
   return {
     api,
@@ -122,6 +124,16 @@ describe('sessionBridge', () => {
     const b = createSessionBridge(f.api, { every: sch.every });
     expect(b.start(freeform).error).toBe('controls: bad');
     expect(sch.s.fn).toBeUndefined();
+  });
+
+  it('reads results and drill previews through the core without touching the session', () => {
+    const { api, calls } = fakeApi();
+    const b = createSessionBridge(api, { now: () => 0, every: fakeScheduler().every });
+    expect(b.results().mode).toBe('freeform');
+    b.results(true);
+    const p = b.previewSamples({ schemaVersion: 1, type: 'sweep', timing: 'timed', controls: ['brake'], phases: [] }, 200);
+    expect(p.values.brake).toEqual([0, 1]);
+    expect(calls).toEqual(['results false', 'results true', expect.stringMatching(/^previewSamples 200 \{"schemaVersion":1/)]);
   });
 
   it('validates drills and reads presets through the core', () => {

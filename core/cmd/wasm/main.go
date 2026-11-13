@@ -64,6 +64,10 @@ func main() {
 			"snapshot":      fn([]js.Type{num}, func(a []js.Value) any { return r.Snapshot(a[0].Float()) }),
 			"presets":       fn(nil, func([]js.Value) any { return api.Presets() }),
 			"validateDrill": fn([]js.Type{str}, func(a []js.Value) any { return api.ValidateDrill([]byte(a[0].String())) }),
+			"results":       fn([]js.Type{js.TypeBoolean}, func(a []js.Value) any { return r.Results(a[0].Bool()) }),
+			"previewSamples": fn([]js.Type{str, num}, func(a []js.Value) any {
+				return api.PreviewSamples([]byte(a[0].String()), a[1].Int())
+			}),
 		},
 	})
 	select {}

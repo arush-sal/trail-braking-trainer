@@ -166,7 +166,8 @@ frames.
 A timed round cannot complete with a frame hole longer than
 `maxFrameGapMs` (silence rule). Metrics (Phase 4) must still report low
 sample coverage (e.g. truncated attempts) as N/A or invalid, never as
-success.
+success. Implemented in `core/metrics` (coverage < 0.90 => N/A; only
+completed attempts are scored), see docs/metric-definitions.md.
 
 ## Config (JSON camelCase)
 

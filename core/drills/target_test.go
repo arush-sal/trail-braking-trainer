@@ -178,3 +178,15 @@ func FuzzTargetsNeverOverlap(f *testing.F) {
 		checkNoOverlap(t, randomDrill(rand.New(rand.NewPCG(a, b)))) //nolint:gosec // deterministic test generator
 	})
 }
+
+func TestPhaseStarts(t *testing.T) {
+	ramp := map[input.Axis]Ramp{input.AxisBrake: {From: 0.5, To: 0.5}}
+	weighted := DrillDefinition{Phases: []Phase{{DurationMs: 1000, Targets: ramp}, {DurationMs: 3000, Targets: ramp}}}
+	if got := PhaseStarts(weighted); len(got) != 2 || got[0] != 0 || got[1] != 0.25 {
+		t.Errorf("weighted = %v", got)
+	}
+	equal := DrillDefinition{Phases: []Phase{{Targets: ramp}, {Targets: ramp}, {Targets: ramp}, {Targets: ramp}}}
+	if got := PhaseStarts(equal); got[1] != 0.25 || got[3] != 0.75 {
+		t.Errorf("equal = %v", got)
+	}
+}

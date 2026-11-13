@@ -98,6 +98,41 @@ describe('session API through core.wasm', () => {
     expect(b.presets().difficulties.beginner?.tolerance).toBe(0.1);
   });
 
+  it('returns results for a timed guided session: separate metrics, N/A rules, bounded display', () => {
+    const { b, at } = manual();
+    const drill = {
+      schemaVersion: 1 as const, type: 'sweep' as const, timing: 'timed' as const, controls: ['brake' as const],
+      countdownMs: 0, restMs: 100, rounds: 2, phases: [{ name: 'press', durationMs: 1000, targets: { brake: { from: 0, to: 1 } } }],
+    };
+    expect(b.start({ availableAxes: ['brake'], drill }).error).toBeUndefined();
+    b.command('start');
+    const brake = (v: number) => ({ available: true, rawValue: v, rawUnit: 'mock-normalized', normalized: v });
+    for (let t = 0; t <= 2100; t += 10) {
+      at(t);
+      // Round 1 (0..1000): exact sweep. Round 2 (1100..2100): stuck at 20%.
+      b.pushFrame({ ...mockFrame(t / 10, t), brake: brake(t <= 1000 ? t / 1000 : 0.2) });
+      b.step();
+    }
+    expect(b.getSnapshot().state).toBe('COMPLETE');
+    const r = b.results();
+    expect(r).toMatchObject({ apiVersion: 1, mode: 'guided', drill: { type: 'sweep' } });
+    expect(r.rounds.map((x) => [x.round, x.outcome, x.durationMs])).toEqual([[1, 'completedTimed', 1000], [2, 'completedTimed', 1000]]);
+    const m = (round: number, id: string) => r.rounds[round].accuracy.concat(r.rounds[round].smoothness, r.rounds[round].timing).find((x) => x.id === id && x.axis === 'brake');
+    expect(m(0, 'accuracy.mae')?.value).toBeCloseTo(0, 6);
+    expect(m(1, 'accuracy.mae')?.value).toBeGreaterThan(20);
+    expect(m(0, 'timing.startDelay')).toMatchObject({ applicable: true, unit: 's', formulaVersion: 'timing/v1' });
+    expect(m(0, 'accuracy.phaseTransition')).toMatchObject({ applicable: false, value: null });
+    expect(r.rounds[0].traces).toBeUndefined(); // display-only by default
+    const tr = b.results(true).rounds[0].traces!.brake!;
+    expect(tr.t[0]).toBe(0);
+    expect(tr.desired?.length).toBe(tr.t.length);
+    expect(r.rounds[0].display.brake!.t.length).toBeLessThanOrEqual(1000);
+    expect(r.consistency.find((x) => x.id === 'consistency.accuracy.mae')?.applicable).toBe(true);
+    expect(JSON.stringify(r)).not.toMatch(/score|overall|composite/i);
+    const p = b.previewSamples(drill, 3);
+    expect(p).toMatchObject({ timed: true, xUnit: 'ms', x: [0, 500, 1000], values: { brake: [0, 0.5, 1] } });
+  });
+
   it('measures per-step call overhead (observe + tick + snapshot)', () => {
     const { b, at } = manual();
     b.start({ availableAxes: ['brake', 'steering', 'throttle'], controls: ['brake'], session: { countdownMs: 0, roundDurationMs: 600000 } });

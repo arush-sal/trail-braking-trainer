@@ -16,6 +16,9 @@ export type TbtApi = {
   snapshot(nowMs: number): string;
   presets(): string;
   validateDrill(drill: string): string;
+  /** includeFull: also return full-resolution traces (large); default display-only. */
+  results(includeFull: boolean): string;
+  previewSamples(drill: string, n: number): string;
 };
 
 export type SessionState = 'IDLE' | 'PREPARE' | 'COUNTDOWN' | 'ACTIVE' | 'REST' | 'PAUSED' | 'SOURCE_LOST' | 'COMPLETE' | 'ABORTED';
@@ -109,6 +112,70 @@ export type Presets = {
   session?: SessionSettings;
   overlap?: Record<string, number>;
   fluctuation?: Record<string, number>;
+};
+
+/** Results contract v1 (docs/results-contract.md, docs/metric-definitions.md). No composite score exists. */
+export type Trace = {
+  /** ms since attempt start (active time, pauses excluded). */
+  t: number[];
+  /** Raw normalized actual; null = unavailable/gap (render as a gap, never 0). */
+  actual: (number | null)[];
+  /** Monotone movement trend used by the smoothness metric (label it "filtered"). */
+  filtered?: (number | null)[];
+  /** Timed guided only: desired at t. */
+  desired?: (number | null)[];
+  valid: boolean[];
+};
+export type ShapeTrace = { u: number[]; actual: (number | null)[]; desired: number[] };
+export type Metric = {
+  id: string;
+  label: string;
+  axis?: Axis;
+  value: number | null;
+  unit: string;
+  better: 'lower' | 'higher' | 'n/a';
+  /** false => render "N/A" with reason, never 100%. */
+  applicable: boolean;
+  reason?: string;
+  coverage?: number;
+  formulaVersion: string;
+};
+export type RoundResult = {
+  round: number;
+  attempt: number;
+  outcome: Outcome;
+  selfPaced: boolean;
+  durationMs: number;
+  phases: { index: number; name?: string; startMs: number }[];
+  /** Full resolution; present only with results(true) (can be very large). */
+  traces?: Partial<Record<Axis, Trace>>;
+  /** Downsampled (<= ~1000 points per axis); always present. */
+  display: Partial<Record<Axis, Trace>>;
+  shape?: Partial<Record<Axis, ShapeTrace>>;
+  accuracy: Metric[];
+  smoothness: Metric[];
+  timing: Metric[];
+};
+export type Recommendation = { id: string; text: string; change?: { path: string; from: unknown; to: unknown } };
+export type SessionResults = {
+  apiVersion: 1;
+  mode: 'freeform' | 'guided';
+  drill?: DrillDefinition;
+  rounds: RoundResult[];
+  consistency: Metric[];
+  recommendations: Recommendation[];
+  /** Set when there is no session. */
+  error?: string;
+};
+/** Desired trajectory for a setup preview: x is ms (timed) or normalized progress u in [0,1] (self-paced). */
+export type DrillPreview = {
+  apiVersion: number;
+  timed: boolean;
+  xUnit: 'ms' | 'u';
+  x: number[];
+  values: Partial<Record<Axis, number[]>>;
+  phases: { index: number; name?: string; startX: number }[];
+  error?: string;
 };
 
 /** What subscribers get once per step (and per command). */
@@ -217,6 +284,10 @@ export function createSessionBridge(api: TbtApi, opts: SessionBridgeOptions = {}
     },
     presets: () => parse<Presets>(api.presets()),
     validateDrill: (d: DrillDefinition) => parse<Result>(api.validateDrill(JSON.stringify(d))),
+    /** Metrics and traces of the finished attempts (read-only; in memory only, gone on the next start). */
+    results: (includeFull = false) => parse<SessionResults>(api.results(includeFull)),
+    /** Desired values at n (<= 500) evenly spaced points, computed by the core (no curve math in TS). */
+    previewSamples: (d: DrillDefinition, n: number) => parse<DrillPreview>(api.previewSamples(JSON.stringify(d), n)),
     dispose: stopPump,
   };
 }

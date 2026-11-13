@@ -50,7 +50,10 @@ time-ordered frames and fresh detectors per session.
 ## Consequences
 - Breaking changes to the JSON shapes bump `apiVersion`.
 - Three Go calls per 60 Hz step; measured cost in the WASM test log.
-- Session attempts/frames are not exported yet (Phase 4 metrics).
+- Phase 4 adds read-only `results()` (metrics + traces of finished
+  attempts, `core/metrics`) and `previewSamples(drill, n)` (desired values
+  for a setup preview); shapes in docs/results-contract.md, formulas in
+  docs/metric-definitions.md.
 - Primary-change events are stamped with the call time, not the exact phase
   boundary.
 

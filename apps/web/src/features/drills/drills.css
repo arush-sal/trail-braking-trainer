@@ -1,0 +1,9 @@
+.drill-editor fieldset { margin: 0.75rem 0; padding: 0.75rem; border: 1px solid #586075; border-radius: 0.5rem; }
+.drill-editor label { display: inline-block; margin: 0.25rem 0.75rem 0.25rem 0; }
+.drill-editor input[type='number'], .drill-editor input[type='text'], .drill-editor select { font: inherit; font-size: 1.125rem; min-height: 2.75rem; min-width: 5rem; padding: 0.25rem 0.5rem; }
+.drill-editor input[type='radio'], .drill-editor input[type='checkbox'] { width: 1.5rem; height: 1.5rem; vertical-align: middle; }
+.drill-editor button { font: inherit; font-size: 1.125rem; min-height: 2.75rem; min-width: 2.75rem; padding: 0.25rem 0.75rem; }
+.drill-editor :focus-visible { outline: 4px solid #ffc83d; outline-offset: 2px; }
+.drill-editor [aria-invalid='true'] { border: 2px solid #ff6b6b; }
+.field-error { color: #ff9b9b; font-weight: 600; }
+.drill-preview { margin: 0.75rem 0; }

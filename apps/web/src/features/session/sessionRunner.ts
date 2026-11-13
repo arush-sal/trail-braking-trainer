@@ -3,19 +3,27 @@
 // source of truth). The only local memory is the latest frame, a "loss already reported" flag
 // and an outcome tally used for the spoken session summary.
 import type { Axis, InputFrame } from '../../input/types';
-import type { SessionBridge, SessionConfig, SessionEvent, SessionState, Snapshot, Command as CoreCommand, Outcome } from '../../wasm/sessionBridge';
+import type { SessionBridge, SessionConfig, SessionEvent, SessionResults, SessionState, Snapshot, Command as CoreCommand, Outcome } from '../../wasm/sessionBridge';
+import { summaryText } from '../results/summaryText';
 import type { AudioAlert, AudioScene } from '../../audio/sonify/types';
 import type { Announcer } from '../../audio/speech/announcer';
 import * as say from '../../audio/speech/phrases';
 import { createDispatcher, type Command } from '../../controls/dispatcher';
 
-export type RunnerBridge = Pick<SessionBridge, 'pushFrame' | 'command' | 'start' | 'getSnapshot' | 'subscribe'>;
+/** results is optional: without it spoken feedback falls back to the short outcome cues. */
+export type RunnerBridge = Pick<SessionBridge, 'pushFrame' | 'command' | 'start' | 'getSnapshot' | 'subscribe'> & { results?: () => SessionResults };
 export type RunnerSonify = { update(s: AudioScene): void; alert(a: AudioAlert): void; duck(on: boolean): void; silence(): void };
 export type RunnerAnnouncer = Pick<Announcer, 'say' | 'onStart' | 'onEnd'>;
 export type RunnerVoice = { suppress(): void; release(): void };
 export type AudioChoice = 'dual' | 'deviation';
 /** What the setup UI hands over. availableAxes is filled in at start from the live source. */
-export type Setup = { name: string; config: SessionConfig extends infer C ? (C extends unknown ? Omit<C, 'availableAxes'> : never) : never; audioMode: AudioChoice };
+export type Setup = {
+  name: string;
+  config: SessionConfig extends infer C ? (C extends unknown ? Omit<C, 'availableAxes'> : never) : never;
+  audioMode: AudioChoice;
+  /** Spoken performance summaries (round + session) from the core metrics; default on. Announcer category toggles still apply. */
+  spokenFeedback?: boolean;
+};
 
 export type RunnerOptions = {
   bridge: RunnerBridge;
@@ -91,11 +99,14 @@ export function createSessionRunner(o: RunnerOptions) {
         if (!out) return;
         tally[out === 'complete' ? 'completed' : out]++;
         alert({ kind: 'round-end', atMs: e.atMs });
-        return speak(say.round({ n: e.round, outcome: out, reason: out === 'invalid' ? 'source lost' : undefined }), { category: 'roundSummary' });
+        const res = feedback();
+        return speak(res ? summaryText(res, e.round) : say.round({ n: e.round, outcome: out, reason: out === 'invalid' ? 'source lost' : undefined }), { category: 'roundSummary' });
       }
-      case 'sessionComplete':
+      case 'sessionComplete': {
         alert({ kind: 'session-complete', atMs: e.atMs });
-        return speak(say.sessionComplete({ total: s.rounds, ...tally }), { category: 'sessionSummary' });
+        const res = feedback();
+        return speak(res ? summaryText(res) : say.sessionComplete({ total: s.rounds, ...tally }), { category: 'sessionSummary' });
+      }
       case 'stateChanged':
         if (e.to === 'SOURCE_LOST') {
           goodStreak = 0; // only frames arriving after the loss may restore it
@@ -105,6 +116,17 @@ export function createSessionRunner(o: RunnerOptions) {
         else if (e.to === 'ABORTED') speak('Session stopped.', { priority: 'critical' });
         return;
       default: return; // primaryChanged: the planner follows snapshot.primary
+    }
+  }
+
+  /** Core results for spoken performance feedback, or null when it is off/unavailable. */
+  function feedback(): SessionResults | null {
+    if (setup?.spokenFeedback === false || !bridge.results) return null;
+    try {
+      const r = bridge.results();
+      return r.error ? null : r;
+    } catch {
+      return null;
     }
   }
 
@@ -155,7 +177,8 @@ export function createSessionRunner(o: RunnerOptions) {
     speak(say.exercise({ name: setup.name, rounds, restSec: restMs === undefined ? undefined : Math.round(restMs / 1000) }), { category: 'instructions' });
   }
 
-  const allowed = (cmd: Command) => ALLOWED[cmd].includes(bridge.getSnapshot().state);
+  // Start needs a valid, settled setup (configure(null) while the drill is invalid or validation is pending).
+  const allowed = (cmd: Command) => ALLOWED[cmd].includes(bridge.getSnapshot().state) && (cmd !== 'start' || setup !== null);
   let lastError = '';
   const dispatcher = createDispatcher({
     allowed,
@@ -178,7 +201,8 @@ export function createSessionRunner(o: RunnerOptions) {
     dispatcher,
     allowed,
     get lastError() { return lastError; },
-    configure(s: Setup) { setup = s; },
+    /** null = no valid setup right now (invalid or still validating): start is refused aloud. */
+    configure(s: Setup | null) { setup = s; },
     /** Every frame from the active source, unfiltered (unavailable/stale included). */
     pushFrame(f: InputFrame) {
       latest = f;

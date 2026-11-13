@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createSessionRunner, type RunnerBridge } from './sessionRunner';
-import type { Result, SessionConfig, SessionEvent, Snapshot } from '../../wasm/sessionBridge';
+import type { Result, SessionConfig, SessionEvent, SessionResults, Snapshot } from '../../wasm/sessionBridge';
+import { fixture } from '../results/fixtures';
 import type { AudioAlert, AudioScene } from '../../audio/sonify/types';
 import type { SayOptions } from '../../audio/speech/announcer';
 import type { InputFrame, Measurement } from '../../input/types';
@@ -13,7 +14,7 @@ const frame = (t: number, v: { brake?: number | null; steering?: number | null; 
 });
 const base: Snapshot = { apiVersion: 1, state: 'IDLE', round: 0, rounds: 0, roundsDone: 0 };
 
-function setup(opts: { commandError?: string } = {}) {
+function setup(opts: { commandError?: string; results?: SessionResults } = {}) {
   let snap = base;
   let now = 1000;
   const subs = new Set<(b: { events: SessionEvent[]; snapshot: Snapshot }) => void>();
@@ -27,6 +28,7 @@ function setup(opts: { commandError?: string } = {}) {
     start: (cfg) => (starts.push(cfg), (snap = { ...snap, state: 'PREPARE' }), ok()),
     getSnapshot: () => snap,
     subscribe: (fn) => (subs.add(fn as never), () => void subs.delete(fn as never)),
+    ...(opts.results ? { results: () => opts.results! } : {}),
   };
   const step = (events: SessionEvent[] = [], patch: Partial<Snapshot> = {}) => {
     snap = { ...snap, ...patch };
@@ -241,5 +243,35 @@ describe('sessionRunner commands', () => {
     u.runner.configure({ name: 'x', config: { controls: ['brake'] }, audioMode: 'dual' });
     expect(u.runner.dispatcher.dispatch('start', 'keyboard')).toEqual({ ok: false, reason: 'sink-error' });
     expect(u.starts).toEqual([]);
+  });
+});
+
+describe('sessionRunner setup validity and spoken performance feedback', () => {
+  it('start is rejected aloud while the setup is invalid or pending (configure(null))', () => {
+    const s = setup();
+    s.runner.configure({ name: 'x', config: { controls: ['brake'] }, audioMode: 'dual' });
+    s.runner.configure(null);
+    s.runner.pushFrame(frame(1000));
+    expect(s.runner.allowed('start')).toBe(false);
+    expect(s.runner.dispatcher.dispatch('start', 'keyboard')).toEqual({ ok: false, reason: 'not-allowed' });
+    expect(s.starts).toEqual([]);
+    expect(s.texts()).toEqual(['Cannot start now.']);
+  });
+
+  it('spokenFeedback on: round and session summaries come from the core results', () => {
+    const s = setup({ results: fixture() });
+    s.runner.configure({ name: 'x', config: { controls: ['brake'] }, audioMode: 'dual', spokenFeedback: true });
+    s.step([{ kind: 'roundEnded', atMs: 3, round: 1, outcome: 'completedTimed' }], { ...active, state: 'REST' });
+    s.step([{ kind: 'sessionComplete', atMs: 4 }], { ...active, state: 'COMPLETE' });
+    expect(s.said[0]).toMatchObject({ text: expect.stringMatching(/^Round 1: completed\. Brake mean error/), opt: { category: 'roundSummary' } });
+    expect(s.said[1]).toMatchObject({ text: expect.stringMatching(/^Session finished: 3 rounds, 2 completed\./), opt: { category: 'sessionSummary' } });
+  });
+
+  it('spokenFeedback off: only the short outcome cues, no metric summaries', () => {
+    const s = setup({ results: fixture() });
+    s.runner.configure({ name: 'x', config: { controls: ['brake'] }, audioMode: 'dual', spokenFeedback: false });
+    s.step([{ kind: 'roundEnded', atMs: 3, round: 1, outcome: 'completedTimed' }], { ...active, state: 'REST' });
+    s.step([{ kind: 'sessionComplete', atMs: 4 }], { ...active, state: 'COMPLETE' });
+    expect(s.texts()).toEqual(['Round 1 complete.', 'Session complete. 1 of 2 rounds completed.']);
   });
 });
