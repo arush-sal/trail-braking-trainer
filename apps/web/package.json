@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "lint": "eslint .",
-    "typecheck": "node ../../node_modules/typescript7/bin/tsc --noEmit -p tsconfig.json"
+    "typecheck": "node ../../node_modules/typescript7/bin/tsc --noEmit -p tsconfig.json",
+    "test:wasm": "vitest run -c vitest.wasm.config.ts"
   },
   "dependencies": {
     "react": "19.3.1",

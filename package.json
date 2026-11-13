@@ -17,5 +17,10 @@
   },
   "overrides": {
     "minimatch": "11.0.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.0",
+    "@types/ws": "8.18.2",
+    "ws": "8.23.0"
   }
 }

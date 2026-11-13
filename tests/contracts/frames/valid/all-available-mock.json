@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "source": "mock",
+  "sourceId": "mock-0",
+  "sequence": 1,
+  "receivedMonoMs": 16.5,
+  "brake": {
+    "available": true,
+    "rawValue": 0.5,
+    "rawUnit": "mock-normalized",
+    "normalized": 0.5
+  },
+  "steering": {
+    "available": true,
+    "rawValue": -0.25,
+    "rawUnit": "mock-normalized",
+    "normalized": -0.25
+  },
+  "throttle": {
+    "available": true,
+    "rawValue": 0,
+    "rawUnit": "mock-normalized",
+    "normalized": 0
+  },
+  "quality": {
+    "gap": false,
+    "stale": false,
+    "calibrated": false
+  }
+}

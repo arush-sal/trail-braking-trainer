@@ -15,4 +15,4 @@ GOOS=js GOARCH=wasm CGO_ENABLED=0 go -C "$root/core" build -trimpath \
 goroot="$(go -C "$root/core" env GOROOT)" # same toolchain that built core.wasm
 exec_js="$goroot/lib/wasm/wasm_exec.js"
 [ -f "$exec_js" ] || exec_js="$goroot/misc/wasm/wasm_exec.js"
-cp "$exec_js" "$out/wasm_exec.js"
+install -m 644 "$exec_js" "$out/wasm_exec.js"

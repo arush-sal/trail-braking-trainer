@@ -11,7 +11,7 @@ describe('App', () => {
   it('shows the mock-only label and header', () => {
     render(<App />);
     expect(screen.getByRole('heading', { name: 'Trail Braking Trainer' })).toBeTruthy();
-    expect(screen.getByText(/MOCK input only/)).toBeTruthy();
+    expect(screen.getByRole('note').textContent).toMatch(/labelled MOCK/);
   });
 
   it('toggles start/stop and shows live values', () => {
@@ -28,4 +28,31 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Stop mock input' }));
     expect(screen.getByRole('button', { name: 'Start mock input' })).toBeTruthy();
   });
+
+  it('switching to gamepad hides mock control and shows device diagnostics', () => {
+    render(<App />);
+    expect(screen.queryByRole('heading', { name: /Input devices/ })).toBeNull();
+    fireEvent.click(screen.getByRole('radio', { name: /Gamepad/ }));
+    expect(screen.queryByRole('button', { name: 'Start mock input' })).toBeNull();
+    expect(screen.getByRole('heading', { name: /Input devices/ })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Audio check' })).toBeTruthy();
+  });
+
+  it('expires stale input: stopping the source turns the readout to n/a', () => {
+    vi.useFakeTimers();
+    vi.spyOn(performance, 'now').mockImplementation(() => Date.now());
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Start mock input' }));
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(screen.getByText('Brake').nextElementSibling?.textContent).toMatch(/%$/);
+    fireEvent.click(screen.getByRole('button', { name: 'Stop mock input' }));
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(screen.getByText('Brake').nextElementSibling?.textContent).toBe('n/a');
+    expect(screen.getByTestId('rate').textContent).toBe('0 Hz');
+  });
 });
+

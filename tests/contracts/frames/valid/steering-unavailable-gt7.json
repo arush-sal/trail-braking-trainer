@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "source": "gt7",
+  "sourceId": "gt7-0",
+  "sequence": 1,
+  "receivedMonoMs": 16.5,
+  "brake": {
+    "available": true,
+    "rawValue": 128,
+    "rawUnit": "byte",
+    "normalized": 0.502,
+    "calibrationId": "cal-1"
+  },
+  "steering": {
+    "available": false,
+    "rawValue": null,
+    "rawUnit": "none",
+    "normalized": null
+  },
+  "throttle": {
+    "available": true,
+    "rawValue": 0,
+    "rawUnit": "mock-normalized",
+    "normalized": 0
+  },
+  "quality": {
+    "gap": false,
+    "stale": false,
+    "calibrated": false
+  },
+  "sourceTimestampMs": 1234.5
+}

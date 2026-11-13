@@ -48,8 +48,12 @@ security: ## govulncheck, OSV-Scanner, Trivy fs, zizmor (tools must be on PATH)
 clean: ## Remove build outputs
 	rm -rf apps/web/dist $(WASM_OUT)
 
+test-wasm: wasm ## Shared frame fixtures + TS mock frames through the built core.wasm (Node)
+	npm run test:wasm -w apps/web
+
+test-e2e: build ## Playwright smoke tests against the built bundle (Chromium)
+	npx playwright test
+
 # Declared by the spec command contract; owned by later phases.
-test-e2e test-wasm: ## Not implemented yet (Phase 1/3)
-	@echo "$@: not implemented until Phase 1 (see docs/requirements.md)" >&2; exit 2
 sbom verify-dist: ## Not implemented yet (Phase 6)
 	@echo "$@: not implemented until Phase 6 (see docs/requirements.md)" >&2; exit 2
