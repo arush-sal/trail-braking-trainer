@@ -54,5 +54,15 @@ describe('App', () => {
     expect(screen.getByText('Brake').nextElementSibling?.textContent).toBe('n/a');
     expect(screen.getByTestId('rate').textContent).toBe('0 Hz');
   });
-});
 
+  it('renders session setup (waiting for the core), controls, audio setup, and the MOCK follow options', () => {
+    render(<App />);
+    expect(screen.getByRole('heading', { name: 'Session' })).toBeTruthy();
+    expect(screen.getByText(/Session needs the core/)).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Controls' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Sonification check' })).toBeTruthy();
+    expect(screen.getByLabelText(/MOCK: follow the drill target/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'MOCK: inject overlap' })).toBeTruthy();
+    expect((window as unknown as { __tbtTest?: unknown }).__tbtTest).toBeUndefined(); // e2e build mode only
+  });
+});

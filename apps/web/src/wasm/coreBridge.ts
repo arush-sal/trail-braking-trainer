@@ -1,7 +1,9 @@
 // Single facade over the Go WASM core (spec 8). Everything else talks to this, never to tbtCore directly.
 import type { InputFrame } from '../input/types';
+import type { TbtApi } from './sessionBridge';
 
-export type CoreApi = { version(): string; validateFrame(f: InputFrame): string | null };
+/** `api` is the session API; wrap it with createSessionBridge (sessionBridge.ts). */
+export type CoreApi = { version(): string; validateFrame(f: InputFrame): string | null; api: TbtApi };
 export type Bench = { n: number; meanUs: number; p95Us: number };
 export type BridgeState = {
   status: 'idle' | 'loading' | 'ready' | 'error';
@@ -67,7 +69,7 @@ export function createCoreBridge(loader: () => Promise<CoreApi>) {
   };
 }
 
-type TbtCore = { version(): string; validateFrame(json: string): string | null };
+type TbtCore = { version(): string; validateFrame(json: string): string | null; api: TbtApi };
 
 function loadScript(src: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -96,7 +98,7 @@ async function browserLoader(): Promise<CoreApi> {
   void go.run(instance).catch(() => undefined);
   for (let i = 0; i < 500; i++) {
     const t = (globalThis as { tbtCore?: TbtCore }).tbtCore;
-    if (t) return { version: () => t.version(), validateFrame: (f) => t.validateFrame(JSON.stringify(f)) ?? null };
+    if (t) return { version: () => t.version(), validateFrame: (f) => t.validateFrame(JSON.stringify(f)) ?? null, api: t.api };
     await new Promise((r) => setTimeout(r, 10));
   }
   throw new Error('core.wasm started but tbtCore was never exposed');

@@ -141,7 +141,9 @@ type Session struct {
 	phasePaused float64 // total paused ms within that phase
 	pausedFrom  State
 	pauseStart  float64
-	announce    int // next countdown second to announce
+	lastValid   float64 // last valid ACTIVE frame (or attempt start), shifted by pauses
+	holdEnd     bool    // a frame stamped exactly at a timed round's end still belongs to it
+	announce    int     // next countdown second to announce
 
 	cur      Attempt // open attempt while ACTIVE (or PAUSED from ACTIVE)
 	attempts []Attempt
@@ -189,6 +191,24 @@ func (s *Session) Attempts() []Attempt {
 	return out
 }
 
+// ActiveElapsedMs returns the unpaused ACTIVE time of the open attempt at
+// nowMs (never earlier than the last accepted time; frozen while paused),
+// and false when no attempt is open. It is a read-only view: it fires no
+// timers, so a timed round may report more than roundDurationMs until the
+// next Tick ends it.
+func (s *Session) ActiveElapsedMs(nowMs float64) (float64, bool) {
+	switch {
+	case s.state == Active:
+		if !(nowMs > s.now) { // also rejects NaN
+			nowMs = s.now
+		}
+		return nowMs - s.phaseStart - s.phasePaused, true
+	case s.state == Paused && s.pausedFrom == Active:
+		return s.pauseStart - s.phaseStart - s.phasePaused, true
+	}
+	return 0, false
+}
+
 // Tick advances the clock, firing any expired countdown/rest/round timers.
 func (s *Session) Tick(nowMs float64) ([]Event, error) { return s.do(nowMs, nil) }
 
@@ -215,6 +235,7 @@ func (s *Session) Dispatch(cmd Command, nowMs float64) ([]Event, error) {
 			}
 			s.phasePaused += s.now - s.pauseStart
 			if s.pausedFrom == Active {
+				s.lastValid += s.now - s.pauseStart // paused time is not silence
 				s.addPause()
 			}
 			s.resetCompletion()
@@ -255,7 +276,10 @@ func (s *Session) Observe(f input.Frame) ([]Event, error) {
 	if err := f.Validate(); err != nil {
 		return nil, err
 	}
+	s.holdEnd = true
+	defer func() { s.holdEnd = false }()
 	return s.do(f.ReceivedMonoMs, func() error {
+		s.holdEnd = false
 		if s.state != Active {
 			return nil
 		}
@@ -264,10 +288,12 @@ func (s *Session) Observe(f input.Frame) ([]Event, error) {
 		} else {
 			s.cur.Truncated = true
 		}
-		switch {
-		case f.Quality.Gap || f.Quality.Stale || s.missingAxis(f):
+		if f.Quality.Gap || f.Quality.Stale || s.missingAxis(f) {
 			s.loseSource()
-		case (s.cfg.Completion == CompletionAuto || s.cfg.Completion == CompletionEither) && s.cfg.AutoComplete.Observe(f):
+			return nil
+		}
+		s.lastValid = f.ReceivedMonoMs
+		if (s.cfg.Completion == CompletionAuto || s.cfg.Completion == CompletionEither) && s.cfg.AutoComplete.Observe(f) {
 			s.endRound(OutcomeCompletedAuto)
 		}
 		return nil
@@ -341,14 +367,28 @@ func (s *Session) advance() {
 		case Rest:
 			dur = s.cfg.RestMs
 		case Active:
-			if s.cfg.Timing != TimingTimed {
-				return
+			dur = math.Inf(1) // self-paced: no timer, only the silence rule
+			if s.cfg.Timing == TimingTimed {
+				dur = s.cfg.RoundDurationMs
 			}
-			dur = s.cfg.RoundDurationMs
 		default:
 			return
 		}
 		end := s.phaseStart + s.phasePaused + dur
+		// Silence rule: a valid frame must arrive within MaxFrameGapMs of
+		// the previous one (or the attempt start). If that deadline passes
+		// before the round's end, the attempt is lost at the deadline, so a
+		// timed round never completes without coverage up to its end.
+		if silence := s.lastValid + s.cfg.MaxFrameGapMs; s.state == Active && silence < end && silence < s.now {
+			saved := s.now
+			s.now = silence
+			s.loseSource()
+			s.now = saved
+			continue
+		}
+		if s.state == Active && s.holdEnd && end == s.now {
+			return // the frame at the end is checked first, then the round ends
+		}
 		for s.state == Countdown && s.announce > 0 {
 			at := max(end-float64(s.announce)*1000, s.phaseStart)
 			if at > s.now {
@@ -365,6 +405,7 @@ func (s *Session) advance() {
 		switch s.state {
 		case Countdown:
 			s.enterPhase(Active)
+			s.lastValid = end
 			s.cur = Attempt{Round: s.done + 1, StartMs: end}
 			s.resetCompletion()
 			s.emit(Event{Kind: EvRoundStarted, AtMs: end, Round: s.done + 1})

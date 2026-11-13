@@ -27,14 +27,25 @@ func frame(t, brake float64) input.Frame {
 	}
 }
 
+// Most tests here check timer/pause/command arithmetic with deliberately
+// sparse or no frames, so the shared helpers disable the silence rule
+// (MaxFrameGapMs = MaxDurationMs). Coverage tests and the fuzzer use the
+// real default via withSilenceRule.
+func withSilenceRule(c Config) Config {
+	c.MaxFrameGapMs = DefaultConfig().MaxFrameGapMs
+	return c
+}
+
 func timedCfg() Config {
 	c := DefaultConfig()
+	c.MaxFrameGapMs = MaxDurationMs
 	c.RoundDurationMs = 10000
 	return c
 }
 
 func selfPacedCfg(mode CompletionMode, hook func(input.Frame) bool) Config {
 	c := DefaultConfig()
+	c.MaxFrameGapMs = MaxDurationMs
 	c.Timing = TimingSelfPaced
 	c.RoundDurationMs = 0
 	c.Completion = mode
@@ -174,7 +185,7 @@ func checkFullSession(t *testing.T, s *Session) {
 }
 
 func TestFullTimedSessionStepped(t *testing.T) {
-	s := mustNew(t, timedCfg())
+	s := mustNew(t, withSilenceRule(timedCfg())) // frames every 100 ms: exactly at the gap limit
 	var evs []Event
 	evs = append(evs, must(s.Dispatch(CmdStart, 0))...)
 	for now := 0.0; now <= fullSessionEndMs+1000; now += 100 {
@@ -187,8 +198,9 @@ func TestFullTimedSessionStepped(t *testing.T) {
 	if count(evs, EvRoundStarted) != 8 || count(evs, EvRoundEnded) != 8 || count(evs, EvSessionComplete) != 1 {
 		t.Fatalf("event counts wrong")
 	}
-	// Frames recorded per round: active is [start, start+10000) sampled at 100ms.
-	if got := len(s.Attempts()[0].Frames); got != 100 {
+	// Frames recorded per round: active is [start, start+10000] sampled at
+	// 100ms; the frame exactly at the end belongs to the round.
+	if got := len(s.Attempts()[0].Frames); got != 101 {
 		t.Fatalf("frames round 1 = %d", got)
 	}
 	if s.Attempts()[0].Frames[0].ReceivedMonoMs != 3000 {
@@ -786,5 +798,131 @@ func TestAttemptCapPerRound(t *testing.T) {
 		if a.Outcome != OutcomeInvalidSourceLost || a.Round != i/2+1 {
 			t.Fatalf("attempt %d: %+v", i, a)
 		}
+	}
+}
+
+func TestActiveElapsed(t *testing.T) {
+	c := timedCfg() // countdown 3000, round 10000
+	s := mustNew(t, c)
+	if _, ok := s.ActiveElapsedMs(0); ok {
+		t.Fatal("no attempt open in PREPARE")
+	}
+	must(s.Dispatch(CmdStart, 0))
+	must(s.Tick(4000)) // ACTIVE since 3000
+	if e, ok := s.ActiveElapsedMs(4500); !ok || e != 1500 {
+		t.Fatalf("elapsed %v ok=%v, want 1500 (extrapolated to nowMs)", e, ok)
+	}
+	if e, _ := s.ActiveElapsedMs(100); e != 1000 {
+		t.Fatalf("nowMs before the session clock uses the clock: got %v", e)
+	}
+	must(s.Dispatch(CmdPause, 5000))
+	if e, ok := s.ActiveElapsedMs(9000); !ok || e != 2000 {
+		t.Fatalf("paused elapsed %v ok=%v, want frozen 2000", e, ok)
+	}
+	must(s.Dispatch(CmdResume, 9000))
+	if e, _ := s.ActiveElapsedMs(9500); e != 2500 {
+		t.Fatalf("resumed elapsed %v, want 2500 (pause excluded)", e)
+	}
+}
+
+// Timed completion requires valid input covering the whole round
+// (MaxFrameGapMs, default 100 ms).
+func TestTimedCompletionRequiresCoverage(t *testing.T) {
+	c := withSilenceRule(timedCfg())
+	c.Rounds, c.CountdownMs, c.RoundDurationMs = 1, 0, 1000
+	c.RequiredAxes = []input.Axis{input.AxisBrake}
+	unavailable := func(t float64) input.Frame {
+		f := frame(t, 0.4)
+		f.Brake = input.Measurement{RawUnit: "none"}
+		return f
+	}
+	tests := []struct {
+		name    string
+		frames  func(s *Session) // frames from t=0 (round start)
+		want    Outcome
+		wantEnd float64
+	}{
+		{"dense valid frames complete at the exact end", func(s *Session) {
+			for t := 0.0; t <= 1000; t += 10 {
+				must(s.Observe(frame(t, 0.4)))
+			}
+		}, OutcomeCompletedTimed, 1000},
+		{"valid frames then a late tick", func(s *Session) {
+			for t := 0.0; t <= 950; t += 10 {
+				must(s.Observe(frame(t, 0.4)))
+			}
+			must(s.Tick(5000))
+		}, OutcomeCompletedTimed, 1000},
+		{"silence 200 ms before the end", func(s *Session) {
+			for t := 0.0; t <= 800; t += 10 {
+				must(s.Observe(frame(t, 0.4)))
+			}
+			must(s.Tick(5000))
+		}, OutcomeInvalidSourceLost, 900},
+		{"silence mid-round, detected by tick", func(s *Session) {
+			for t := 0.0; t <= 300; t += 10 {
+				must(s.Observe(frame(t, 0.4)))
+			}
+			must(s.Tick(450))
+		}, OutcomeInvalidSourceLost, 400},
+		{"silence mid-round, detected by the next frame", func(s *Session) {
+			must(s.Observe(frame(0, 0.4)))
+			must(s.Observe(frame(500, 0.4)))
+		}, OutcomeInvalidSourceLost, 100},
+		{"unavailable frame exactly at the end", func(s *Session) {
+			for t := 0.0; t < 1000; t += 10 {
+				must(s.Observe(frame(t, 0.4)))
+			}
+			must(s.Observe(unavailable(1000)))
+		}, OutcomeInvalidSourceLost, 1000},
+		{"gap frame exactly at the end", func(s *Session) {
+			for t := 0.0; t < 1000; t += 10 {
+				must(s.Observe(frame(t, 0.4)))
+			}
+			f := frame(1000, 0.4)
+			f.Quality.Gap = true
+			must(s.Observe(f))
+		}, OutcomeInvalidSourceLost, 1000},
+		{"frame exactly at the gap limit is fine", func(s *Session) {
+			for t := 0.0; t <= 1000; t += 100 {
+				must(s.Observe(frame(t, 0.4)))
+			}
+		}, OutcomeCompletedTimed, 1000},
+		{"paused time is not silence", func(s *Session) {
+			must(s.Observe(frame(0, 0.4)))
+			must(s.Observe(frame(50, 0.4)))
+			must(s.Dispatch(CmdPause, 60))
+			must(s.Dispatch(CmdResume, 5000))
+			for t := 5040.0; t <= 6000; t += 10 {
+				must(s.Observe(frame(t, 0.4)))
+			}
+		}, OutcomeCompletedTimed, 5940},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := mustNew(t, c)
+			must(s.Dispatch(CmdStart, 0))
+			tc.frames(s)
+			at := s.Attempts()
+			if len(at) == 0 || at[0].Outcome != tc.want || at[0].EndMs != tc.wantEnd {
+				if len(at) > 0 {
+					t.Fatalf("got %s ending at %v, want %s at %v", at[0].Outcome, at[0].EndMs, tc.want, tc.wantEnd)
+				}
+				t.Fatalf("no attempt (state %s), want %s", s.State(), tc.want)
+			}
+		})
+	}
+}
+
+func TestSelfPacedSilenceLosesSource(t *testing.T) {
+	c := withSilenceRule(selfPacedCfg(CompletionManual, nil))
+	c.CountdownMs = 0
+	s := mustNew(t, c)
+	must(s.Dispatch(CmdStart, 0))
+	must(s.Observe(frame(50, 0.4)))
+	must(s.Tick(151))
+	wantState(t, s, SourceLost)
+	if a := s.Attempts()[0]; a.Outcome != OutcomeInvalidSourceLost || a.EndMs != 150 {
+		t.Fatalf("got %s ending at %v", a.Outcome, a.EndMs)
 	}
 }

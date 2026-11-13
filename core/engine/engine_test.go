@@ -51,7 +51,7 @@ func TestOverlapDetector(t *testing.T) {
 		want []float64 // expected onset event times (ms)
 	}{
 		{"exact trail-brake target never overlaps", def, exactTarget(trailBrake(), 500), []float64{}},
-		{"clean overlap: one onset at entry", def, overlapTrace(3000, 1000, 2000, ramp), []float64{1170}},
+		{"clean overlap: one onset at entry", def, overlapTrace(3000, 1000, 2000, ramp), []float64{1190}},
 		{"flapping above exit threshold: one alert", def, overlapTrace(3000, 1000, 2000, flap(0.04, 0.06)), []float64{1000}},
 		{"flapping across exit within cooldown: one alert", def, overlapTrace(3000, 1000, 2000, flap(0, 0.06)), []float64{1000}},
 		{"two overlaps separated by more than cooldown", def, overlapTrace(3000, 1000, 2300, pause(1200, 2000)), []float64{1000, 2000}},

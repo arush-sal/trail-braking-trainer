@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   ProtocolError,
   SeqTracker,
+  browserWarnings,
   buildHello,
   checkUrl,
   closeToError,
+  lnaPermissionFor,
   mapFrame,
   parseServerMessage,
   parseWelcome,
@@ -150,5 +152,28 @@ describe('closeToError', () => {
     expect(u).toMatchObject({ code: 'unreachable', fatal: false });
     expect(u.message).toMatch(/origin/i);
     expect(closeToError(1006, '', true)).toMatchObject({ code: 'connection-lost', fatal: false });
+  });
+});
+
+describe('lnaPermissionFor', () => {
+  it('picks loopback-network / local-network / none by target host', () => {
+    expect(lnaPermissionFor('ws://127.0.0.1:8787/v1/inputs')).toBe('loopback-network');
+    expect(lnaPermissionFor('ws://localhost:8787')).toBe('loopback-network');
+    expect(lnaPermissionFor('ws://[::1]:8787')).toBe('loopback-network');
+    expect(lnaPermissionFor('ws://192.168.1.20:8787')).toBe('local-network');
+    expect(lnaPermissionFor('ws://ps-host.local:8787')).toBe('local-network');
+    expect(lnaPermissionFor('wss://collector.example.com')).toBeNull();
+    expect(lnaPermissionFor('garbage')).toBeNull();
+  });
+});
+
+describe('browserWarnings', () => {
+  const safari = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15';
+  const chrome = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
+  it('warns Safari users on https -> ws:// even to loopback', () => {
+    expect(browserWarnings('ws://127.0.0.1:8787', 'https:', safari)[0]).toMatch(/Safari.*wss:\/\//);
+    expect(browserWarnings('wss://127.0.0.1:8787', 'https:', safari)).toEqual([]);
+    expect(browserWarnings('ws://127.0.0.1:8787', 'http:', safari)).toEqual([]);
+    expect(browserWarnings('ws://127.0.0.1:8787', 'https:', chrome)).toEqual([]);
   });
 });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mockFrame, startMockSource } from './mockSource';
+import { followValues, mockFrame, startMockSource } from './mockSource';
 import type { InputFrame } from '../types';
 
 const axes = ['brake', 'steering', 'throttle'] as const;
@@ -80,5 +80,35 @@ describe('startMockSource', () => {
     vi.advanceTimersByTime(1000);
     stop();
     expect(frames.length).toBe(10);
+  });
+});
+
+describe('mock follow (drives a guided session hands-off)', () => {
+  it('followValues tracks the target with offset, clamps, and zeroes unselected or absent targets', () => {
+    expect(followValues({ brake: 0.4, steering: -0.5 }, { offset: 0.1, noise: 0 })).toEqual({ brake: 0.5, steering: -0.6, throttle: 0 }); // offset is a magnitude overshoot;
+    expect(followValues({ brake: 0.95 }, { offset: 0.1, noise: 0 })).toEqual({ brake: 1, steering: 0, throttle: 0 });
+    expect(followValues(null, { offset: 0.1, noise: 0 })).toEqual({ brake: 0, steering: 0, throttle: 0 });
+    const n = followValues({ brake: 0.5 }, { offset: 0, noise: 0.02 });
+    expect(Math.abs(n.brake - 0.5)).toBeLessThanOrEqual(0.02);
+  });
+
+  it('injected overlap forces brake and throttle on together', () => {
+    const v = followValues({ brake: 0.4 }, { offset: 0, noise: 0, overlap: true });
+    expect(v.brake).toBeGreaterThan(0.3);
+    expect(v.throttle).toBeGreaterThan(0.3);
+  });
+
+  it('startMockSource uses the values hook when it returns values, the cycle otherwise', () => {
+    vi.useFakeTimers();
+    const got: number[] = [];
+    let hook: (() => { brake: number; steering: number; throttle: number } | null) = () => ({ brake: 0.25, steering: 0, throttle: 0 });
+    const stop = startMockSource((f) => got.push(f.brake.normalized!), { hz: 100, values: () => hook() });
+    vi.advanceTimersByTime(20);
+    hook = () => null;
+    vi.advanceTimersByTime(10);
+    stop();
+    vi.useRealTimers();
+    expect(got.slice(0, 2)).toEqual([0.25, 0.25]);
+    expect(got.length).toBe(3);
   });
 });

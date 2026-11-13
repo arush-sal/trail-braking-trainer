@@ -172,4 +172,23 @@ describe('adapter', () => {
     expect(s2.a.stats().error).toBeNull();
     s2.a.stop();
   });
+
+  it('device Hz follows value changes even when timestamp is constant', () => {
+    const s = setup();
+    s.pads.push(pad('W', 0, [0], [], 7));
+    s.a.start();
+    s.tick();
+    s.pads[0]!.axes[0] = 0.1;
+    s.tick();
+    s.pads[0]!.axes[0] = 0.2;
+    s.tick();
+    s.tick();
+    const d = s.a.snapshot().devices[0]!;
+    expect(d.hz).toBe(3);
+    expect(d.unchanged).toBe(1);
+    expect(d.changed).toBe(false);
+    expect(d.timestamp).toBe(7);
+    expect(d.vid).toBeNull();
+    s.a.stop();
+  });
 });

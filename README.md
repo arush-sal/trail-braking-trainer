@@ -4,15 +4,17 @@ Browser-based muscle-memory trainer for precise, smooth, repeatable brake,
 steering, and throttle input. It is not a racing-line advisor, lap-time
 optimizer, or race engineer. Spec: `trail-braking-trainer-implementation-plan.md`.
 
-## Status: Phase 1 (feasibility prototypes)
+## Status: Phase 3 (audio, speech and session controls; MOCK-verified only)
 
 | Area | State |
 |---|---|
 | Input | MOCK source, plus Gamepad adapter + diagnostics (prototype, **not verified on any wheel yet**). |
-| Go core | Input frame contract + strict decode; loaded in the browser via WASM. |
 | Fanatec / Logitech | Not tested. Follow `docs/hardware-test-protocol.md`. |
-| Audio | Single pitch-tone prototype. Speech, voice/button commands not implemented. |
-| Drills, sessions, metrics, graphs | Not implemented. |
+| Go core | Drills, targets, session state machine, overlap/fluctuation/completion/primary detectors; WASM session API v1 (ADR 0007). |
+| Audio + speech | Sonification (position, movement, smoothness; dual tone / deviation / self-paced end-state), alerts, spoken cues with ducking. Sounds are PROPOSED; no listening test yet; browser speech output unverified. |
+| Commands | One dispatcher for keyboard, learned gamepad buttons, voice (browser SpeechRecognition, privacy notice) and UI. Voice and gamepad buttons unverified. |
+| Sessions | Freeform and guided (4 built-in example drills), rounds/rest/countdown, source-loss handling. A MOCK guided session completes eyes-free in e2e. |
+| Metrics, graphs, drill editor | Not implemented (Phase 4). Session results stay in memory only. |
 | GT7 collector WebSocket | Client prototype vs MOCK server (`tests/mock-collector/`); collector side is Phase 5. GT7 steering always unavailable. |
 | Release, SBOM, signing, deploy | Not implemented (Phase 6). |
 

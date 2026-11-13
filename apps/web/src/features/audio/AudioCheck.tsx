@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Axis, InputFrame } from '../../input/types';
 import { MAX_GAIN } from '../../audio/synth/mapping';
+import { fmtLatency } from '../../audio/synth/env';
 import { ToneEngine, type EngineState } from '../../audio/synth/ToneEngine';
 
 type Props = { getLatestFrame: () => InputFrame | null; engine?: ToneEngine };
@@ -13,7 +14,9 @@ export function AudioCheck({ getLatestFrame, engine: injected }: Props) {
   const [muted, setMuted] = useState(false);
   const [stats, setStats] = useState(() => engine.latency.summary());
 
+  const [bg, setBg] = useState(engine.backgroundRisk ?? false);
   useEffect(() => engine.onState(setState), [engine]);
+  useEffect(() => engine.onBackgroundRisk?.(setBg), [engine]);
   useEffect(() => () => { if (!injected) void engine.dispose(); }, [engine, injected]);
 
   // Drive audio from the latest frame; no React render per sample.
@@ -58,6 +61,7 @@ export function AudioCheck({ getLatestFrame, engine: injected }: Props) {
           <option value="throttle">throttle</option>
         </select>
       </label>
+      {bg && <p role="status">Tab is hidden: audio and input updates may be throttled in background tabs (unverified). Keep this tab visible.</p>}
       <h3>Control-update latency</h3>
       <p>Input frame received to audio parameter update scheduled. This is NOT acoustic end-to-end latency; that needs a manual loopback/recording test.</p>
       <dl>
@@ -65,6 +69,7 @@ export function AudioCheck({ getLatestFrame, engine: injected }: Props) {
         <dt>p50 / p95 / max</dt><dd>{stats.p50.toFixed(1)} / {stats.p95.toFixed(1)} / {stats.max.toFixed(1)} ms</dd>
         <dt>baseLatency</dt><dd>{fmt(lat.baseLatencyMs)}</dd>
         <dt>outputLatency</dt><dd>{fmt(lat.outputLatencyMs)}</dd>
+        <dt>base + output (reported, not measured)</dt><dd>{fmtLatency(lat.totalMs ?? null)}</dd>
       </dl>
     </section>
   );

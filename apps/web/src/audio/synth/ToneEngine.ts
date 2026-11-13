@@ -1,4 +1,5 @@
 import type { Axis, InputFrame } from '../../input/types';
+import { VisibilityGuard, outputLatencyMs, type VisibilityLike } from './env';
 import { DEFAULT_GAIN, LatencyStats, clampGain, positionToFreq } from './mapping';
 
 export type EngineState = 'locked' | 'running' | 'suspended' | 'closed';
@@ -26,7 +27,13 @@ export class ToneEngine {
   private disposed = false;
   private listeners = new Set<(s: EngineState) => void>();
 
-  constructor(private factory: () => CtxLike = () => new AudioContext() as CtxLike) {}
+  private vis: VisibilityGuard;
+  constructor(private factory: () => CtxLike = () => new AudioContext() as CtxLike, doc?: VisibilityLike) {
+    this.vis = new VisibilityGuard(doc);
+  }
+  get backgroundRisk() { return this.vis.backgroundRisk; }
+  onBackgroundRisk(fn: (risk: boolean) => void) { return this.vis.subscribe(fn); }
+  get interrupted() { return (this.ctx?.state as string | undefined) === 'interrupted'; }
 
   get volume() { return this.vol; }
   get state(): EngineState {
@@ -57,7 +64,7 @@ export class ToneEngine {
       this.osc.start();
       this.ctx = c;
     }
-    await this.ctx.resume();
+    try { await this.ctx.resume(); } catch { /* Safari may throw while interrupted */ }
     this.emit();
   }
 
@@ -99,6 +106,7 @@ export class ToneEngine {
   async dispose() {
     if (this.disposed || !this.ctx) return;
     this.disposed = true;
+    this.vis.dispose();
     this.osc?.stop();
     this.osc?.disconnect();
     this.env?.disconnect();
@@ -109,6 +117,6 @@ export class ToneEngine {
 
   audioLatency() {
     const ms = (v?: number) => (typeof v === 'number' ? Math.round(v * 1000) : null);
-    return { baseLatencyMs: ms(this.ctx?.baseLatency), outputLatencyMs: ms(this.ctx?.outputLatency) };
+    return { baseLatencyMs: ms(this.ctx?.baseLatency), outputLatencyMs: ms(this.ctx?.outputLatency), totalMs: outputLatencyMs(this.ctx) };
   }
 }

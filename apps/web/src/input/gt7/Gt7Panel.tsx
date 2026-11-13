@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { InputFrame } from '../types';
-import { createGt7Client, type Gt7Client, type Gt7ClientOptions, type Gt7Counters, type Gt7Status } from './gt7Client';
-import { unavailableFrame, type Welcome } from './protocol';
+import { createGt7Client, queryLnaPermission, type Gt7Client, type Gt7ClientOptions, type Gt7Counters, type Gt7Status } from './gt7Client';
+import { browserWarnings, lnaPermissionFor, unavailableFrame, type Welcome } from './protocol';
 
 const DEFAULT_URL = 'ws://127.0.0.1:8787/v1/inputs';
 const pct = (v: number | null | undefined) => (v == null ? 'n/a' : `${Math.round(v * 100)}%`);
@@ -18,11 +18,15 @@ export function Gt7Panel({ onFrame, createClient = createGt7Client }: Props) {
   const [status, setStatus] = useState<Gt7Status | 'idle'>('idle');
   const [welcome, setWelcome] = useState<Welcome | null>(null);
   const [error, setError] = useState('');
+  const [lna, setLna] = useState('');
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [view, setView] = useState<{ frame: InputFrame | null; counters: Gt7Counters | null }>({ frame: null, counters: null });
   const client = useRef<Gt7Client | null>(null);
   const latest = useRef<InputFrame | null>(null);
   const live = useRef<{ live: boolean; sourceId: string }>({ live: false, sourceId: 'gt7' });
   const onFrameRef = useRef(onFrame);
+  // Bumped by every Connect, Disconnect and unmount: a stale async connect must not open a socket.
+  const gen = useRef(0);
   useEffect(() => {
     onFrameRef.current = onFrame;
   });
@@ -33,11 +37,30 @@ export function Gt7Panel({ onFrame, createClient = createGt7Client }: Props) {
     const id = setInterval(() => setView({ frame: latest.current, counters: client.current?.counters() ?? null }), 250);
     return () => clearInterval(id);
   }, [status]);
-  useEffect(() => () => client.current?.close(), []);
+  useEffect(
+    () => () => {
+      gen.current++;
+      client.current?.close();
+      client.current = null;
+    },
+    [],
+  );
 
-  const connect = () => {
+  // Only ever called from the Connect click: LNA prompts must come from a user gesture.
+  const connect = async () => {
+    const mine = ++gen.current;
     client.current?.close();
+    client.current = null;
     setError('');
+    setWarnings(browserWarnings(url, globalThis.location?.protocol ?? 'http:', globalThis.navigator?.userAgent ?? ''));
+    const perm = lnaPermissionFor(url);
+    const state = await queryLnaPermission(url);
+    if (mine !== gen.current) return; // superseded by Disconnect, unmount or a later Connect
+    setLna(perm ? `${perm}: ${state}` : '');
+    if (state === 'denied') {
+      setError(`This browser has denied ${perm} access for this site. Allow local network / device access for this site in the browser's site settings (address-bar site info icon), reload, and connect again.`);
+      return;
+    }
     setWelcome(null);
     latest.current = null;
     client.current = createClient({
@@ -66,6 +89,7 @@ export function Gt7Panel({ onFrame, createClient = createGt7Client }: Props) {
     });
   };
   const disconnect = () => {
+    gen.current++;
     client.current?.close();
     client.current = null;
     setStatus('closed');
@@ -83,12 +107,16 @@ export function Gt7Panel({ onFrame, createClient = createGt7Client }: Props) {
       <label>
         Pairing token <input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} />
       </label>
-      <button onClick={connect}>Connect</button>
+      <button onClick={() => void connect()}>Connect</button>
       <button onClick={disconnect}>Disconnect</button>
       <p>
         Status: <strong>{status}</strong>
         {welcome && ` (collector ${welcome.collectorVersion}, protocol v${welcome.version}, ${welcome.sourceId})`}
       </p>
+      {lna && <p data-testid="lna">Local network permission: {lna}</p>}
+      {warnings.map((w) => (
+        <p key={w}>{w}</p>
+      ))}
       {error && <p role="alert">{error}</p>}
       {caps && (
         <table>

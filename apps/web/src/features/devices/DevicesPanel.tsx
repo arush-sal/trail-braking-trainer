@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { AXES, createGamepadAdapter, type PadLike } from '../../input/gamepad/adapter';
+import { AXES, createGamepadAdapter, type DeviceInfo, type Mappings, type PadLike } from '../../input/gamepad/adapter';
+import { suggestionFor, applySuggestion } from '../../input/gamepad/suggestions';
 import { detectCapabilities } from '../../input/gamepad/capabilities';
 import { defaultMapping, type Kind, type Mapping } from '../../input/gamepad/normalize';
 import type { Axis, InputFrame } from '../../input/types';
@@ -15,9 +16,11 @@ export type DevicesPanelProps = {
   /** Receives every polled InputFrame (not rate-limited); route to audio/WASM. */
   onFrame?: (frame: InputFrame) => void;
   getGamepads?: () => readonly (PadLike | null)[];
+  /** Every poll: device button values and the training-input mappings (App uses the mappings to keep training inputs out of command bindings). */
+  onPads?: (pads: readonly DeviceInfo[], mappings: Mappings) => void;
 };
 
-export function DevicesPanel({ onFrame, getGamepads }: DevicesPanelProps) {
+export function DevicesPanel({ onFrame, getGamepads, onPads }: DevicesPanelProps) {
   const [adapter] = useState(() =>
     createGamepadAdapter({
       getGamepads: getGamepads ?? (() => (navigator.getGamepads ? navigator.getGamepads() : [])),
@@ -29,8 +32,14 @@ export function DevicesPanel({ onFrame, getGamepads }: DevicesPanelProps) {
   const caps = detectCapabilities();
 
   useEffect(() => {
-    adapter.setOnFrame(onFrame);
-  }, [adapter, onFrame]);
+    adapter.setOnFrame((f) => {
+      onFrame?.(f);
+      if (onPads) {
+        const s = adapter.snapshot();
+        onPads(s.devices, s.mappings);
+      }
+    });
+  }, [adapter, onFrame, onPads]);
 
   useEffect(() => {
     adapter.start();
@@ -92,8 +101,33 @@ export function DevicesPanel({ onFrame, getGamepads }: DevicesPanelProps) {
             {d.id} (index {d.index}, mapping &quot;{d.mapping || 'none'}&quot;)
           </h4>
           <p>
-            {d.axes.length} axes, {d.buttons.length} buttons - {d.hz} Hz, {d.duplicates} duplicate polls
+            {d.axes.length} axes, {d.buttons.length} buttons - {d.hz} Hz (value changes), {d.unchanged} unchanged polls, timestamp {d.timestamp} (diagnostic only)
           </p>
+          <p>
+            Raw id: <code>{d.id}</code> - VID:PID {d.vid ? `${d.vid}:${d.pid}` : 'unknown'}
+          </p>
+          {(() => {
+            const sg = suggestionFor(d.vid ? { vid: d.vid, pid: d.pid! } : null);
+            if (!sg) return null;
+            return (
+              <div>
+                <p>
+                  {sg.label}. {sg.note} <a href={sg.source}>source</a>
+                </p>
+                {sg.pedalInvert && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const out = applySuggestion(sg, view.mappings, d.key);
+                      for (const a of AXES) if (out[a] !== view.mappings[a]) adapter.setMapping(a, out[a] ?? null);
+                    }}
+                  >
+                    Apply suggestion (invert mapped pedal axes)
+                  </button>
+                )}
+              </div>
+            );
+          })()}
           <table>
             <tbody>
               <tr>

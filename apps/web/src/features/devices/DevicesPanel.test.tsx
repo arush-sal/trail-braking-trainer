@@ -49,6 +49,18 @@ describe('DevicesPanel', () => {
     expect(screen.getByTestId('norm-steering').textContent).toBe('-25%');
   });
 
+  it('feeds every poll button values and current mappings to onPads (command bindings)', () => {
+    vi.useFakeTimers();
+    const seen: { pads: readonly { key: string; buttons: readonly number[] }[]; mapped: number }[] = [];
+    render(<DevicesPanel getGamepads={() => [fake]} onPads={(pads, maps) => seen.push({ pads, mapped: Object.keys(maps).length })} />);
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+    expect(seen.length).toBeGreaterThan(3);
+    expect(seen.at(-1)!.pads).toEqual([expect.objectContaining({ key: `${fake.id}#0`, buttons: [0, 0.5] })]);
+    expect(seen.at(-1)!.mapped).toBe(0);
+  });
+
   it('shows a copyable diagnostics report', () => {
     vi.useFakeTimers();
     render(<DevicesPanel getGamepads={() => [fake]} />);
@@ -57,5 +69,37 @@ describe('DevicesPanel', () => {
     expect(report).toHaveProperty('userAgent');
     expect(report).toHaveProperty('capabilities');
     expect(report).toHaveProperty('visibilityLog');
+  });
+
+  it('shows raw id, VID:PID and an opt-in G923 suggestion', () => {
+    vi.useFakeTimers();
+    const g923 = { ...fake, id: 'G923 (STANDARD GAMEPAD Vendor: 046d Product: c266)' };
+    render(<DevicesPanel getGamepads={() => [g923]} />);
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(screen.getAllByText(/STANDARD GAMEPAD Vendor: 046d/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/046d:c266/)).toBeTruthy();
+    expect(screen.getByText(/public info, unverified locally/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Brake device'), { target: { value: `${g923.id}#0` } });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect((screen.getByLabelText('Brake invert') as HTMLInputElement).checked).toBe(false); // never auto-applied
+    fireEvent.click(screen.getByRole('button', { name: /Apply suggestion/ }));
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect((screen.getByLabelText('Brake invert') as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('Fanatec DD base shows the confirm-manually note', () => {
+    vi.useFakeTimers();
+    render(<DevicesPanel getGamepads={() => [{ ...fake, id: '0eb7-0020-Fanatec Wheel' }]} />);
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(screen.getByText(/confirm manually/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Apply suggestion/ })).toBeNull();
   });
 });

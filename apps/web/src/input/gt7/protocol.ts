@@ -163,7 +163,30 @@ export class SeqTracker {
   }
 }
 
-const LOCAL_HOST = /^(localhost|.+\.localhost|.+\.local|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|169\.254\.\d+\.\d+|\[::1\]|\[f[cd][0-9a-f]*:.*\]|\[fe[89ab][0-9a-f]*:.*\])$/i;
+const LOOPBACK_HOST = /^(localhost|.+\.localhost|127\.\d+\.\d+\.\d+|\[::1\])$/i;
+const PRIVATE_HOST = /^(.+\.local|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|169\.254\.\d+\.\d+|\[f[cd][0-9a-f]*:.*\]|\[fe[89ab][0-9a-f]*:.*\])$/i;
+const isLocalHost = (h: string) => LOOPBACK_HOST.test(h) || PRIVATE_HOST.test(h);
+
+/** Chrome Local Network Access permission a WebSocket to this URL needs (never the legacy 'local-network-access' name). */
+export function lnaPermissionFor(url: string): 'loopback-network' | 'local-network' | null {
+  let h: string;
+  try {
+    h = new URL(url).hostname;
+  } catch {
+    return null;
+  }
+  return LOOPBACK_HOST.test(h) ? 'loopback-network' : PRIVATE_HOST.test(h) ? 'local-network' : null;
+}
+
+// Public-info only (WebKit bugs 171934, 173161, 279249; docs/research/public-evidence.md s6) - UNVERIFIED locally.
+const isSafari = (ua: string) => /Safari\//.test(ua) && !/Chrome|Chromium|CriOS|FxiOS|Edg|Android/.test(ua);
+
+/** Non-blocking, browser-specific warnings to show before connecting. */
+export function browserWarnings(url: string, pageProtocol: string, ua: string): string[] {
+  return pageProtocol === 'https:' && url.startsWith('ws:') && isSafari(ua)
+    ? ['Safari likely blocks ws:// from an HTTPS page, even to 127.0.0.1 (unverified). If it fails, use wss:// with a locally trusted certificate, or open the trainer from http://localhost.']
+    : [];
+}
 
 export type ClientError = { code: Gt7ErrorCode; message: string; fatal: boolean };
 
@@ -178,7 +201,7 @@ export function checkUrl(url: string, pageProtocol: string): ClientError | null 
   if (u.protocol !== 'ws:' && u.protocol !== 'wss:') return { code: 'bad-url', message: 'URL must start with ws:// or wss://.', fatal: true };
   if (u.username || u.password || /token|secret|key|pass/i.test(u.search))
     return { code: 'bad-url', message: 'Do not put credentials in the URL; use the pairing token field (sent inside the hello message).', fatal: true };
-  if (pageProtocol === 'https:' && u.protocol === 'ws:' && !LOCAL_HOST.test(u.hostname))
+  if (pageProtocol === 'https:' && u.protocol === 'ws:' && !isLocalHost(u.hostname))
     return {
       code: 'mixed-content',
       message: `This HTTPS page cannot open insecure ws:// to the public host ${u.hostname} (mixed content). Use a loopback/private IP or .local name (browser local-network permission may be required), or wss://.`,

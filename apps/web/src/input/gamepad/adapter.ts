@@ -4,6 +4,7 @@ import {
   type Detected, type Mapping, type PadSnapshot, type RangeCapture,
 } from './normalize';
 import { createDeviceTracker, summarize, type Summary } from './stats';
+import { parseVidPid } from './ids';
 
 /** Structural subset of the DOM Gamepad so tests can inject fakes. */
 export type PadLike = {
@@ -19,7 +20,9 @@ export type AdapterEvent = {
 };
 export type DeviceInfo = {
   key: string; id: string; index: number; mapping: string; timestamp: number;
-  axes: number[]; buttons: number[]; hz: number; polls: number; duplicates: number;
+  axes: number[]; buttons: number[]; hz: number; polls: number; unchanged: number;
+  changed: boolean; // values differ from previous poll
+  vid: string | null; pid: string | null;
 };
 export type Mappings = Partial<Record<Axis, Mapping>>;
 
@@ -166,10 +169,13 @@ export function createGamepadAdapter(opts: AdapterOptions) {
     devices = ks.map(({ key, pad }) => {
       let tr = trackers.get(key);
       if (!tr) trackers.set(key, (tr = createDeviceTracker()));
-      if (timed) tr.record(t, pad.timestamp);
+      const axes = [...pad.axes];
+      const buttons = pad.buttons.map((b) => b.value);
+      const changed = timed ? tr.record(t, [...axes, ...buttons]) : (devices.find((d) => d.key === key)?.changed ?? true);
+      const vp = parseVidPid(pad.id);
       return {
         key, id: pad.id, index: pad.index, mapping: pad.mapping ?? '', timestamp: pad.timestamp,
-        axes: [...pad.axes], buttons: pad.buttons.map((b) => b.value), ...tr.stats(t),
+        axes, buttons, changed, vid: vp?.vid ?? null, pid: vp?.pid ?? null, ...tr.stats(t),
       };
     });
     if (detect) {
@@ -182,7 +188,7 @@ export function createGamepadAdapter(opts: AdapterOptions) {
     }
     const [brake, steering, throttle] = [measure('brake', t), measure('steering', t), measure('throttle', t)];
     const used = AXES.filter((a) => mappings[a] && [brake, steering, throttle][AXES.indexOf(a)]!.available);
-    // Emit every poll: Chrome only updates `timestamp` on change, so steady pedals must still produce samples.
+    // Emit every poll: timestamp semantics vary by platform, so steady pedals must still produce samples.
     lastFrame = {
       schemaVersion: 1, source: 'gamepad',
       sourceId: [...new Set(AXES.map((a) => mappings[a]?.deviceId).filter(Boolean))].join('+') || 'gamepad',

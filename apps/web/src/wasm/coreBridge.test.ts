@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createCoreBridge, type CoreApi } from './coreBridge';
 import { mockFrame } from '../input/mock/mockSource';
+import type { TbtApi } from './sessionBridge';
 
-const fake: CoreApi = { version: () => 'v1', validateFrame: () => null };
+const fake: CoreApi = { version: () => 'v1', validateFrame: () => null, api: {} as TbtApi };
 
 describe('coreBridge', () => {
   it('starts idle, loads, exposes version and load time', async () => {

@@ -47,10 +47,14 @@ type OverlapConfig struct {
 }
 
 // DefaultOverlapConfig returns the PROPOSED defaults: enter 5%, exit 2%,
-// noise floor 0 (until measured), cooldown 500 ms.
+// noise floor 0.005, cooldown 500 ms.
 func DefaultOverlapConfig() OverlapConfig {
-	return OverlapConfig{EnterThreshold: 0.05, ExitThreshold: 0.02, CooldownMs: 500}
+	return OverlapConfig{EnterThreshold: 0.05, ExitThreshold: 0.02, NoiseFloor: DefaultNoiseFloor, CooldownMs: 500}
 }
+
+// DefaultNoiseFloor (~one 8-bit step) is provisional, public-info
+// inference, to be measured in hardware test T2.
+const DefaultNoiseFloor = 0.005
 
 // OverlapEvent is one overlap onset with the unsuppressed actual values.
 type OverlapEvent struct {

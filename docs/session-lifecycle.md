@@ -53,6 +53,7 @@ terminal until reset.
 | `Observe(frame)` | feed a frame; `frame.ReceivedMonoMs` is the clock |
 | `SourceLost(nowMs)`, `SourceRestored(nowMs)` | explicit source state |
 | `State()`, `RoundsDone()`, `Attempts()` | read-only views (`Attempts` is a copy) |
+| `ActiveElapsedMs(nowMs)` | unpaused ACTIVE time of the open attempt (frozen while paused); read-only, fires no timers |
 
 Every mutating call returns the `[]Event` it produced, ordered by `atMs`.
 
@@ -85,7 +86,11 @@ back on error, including any timer expiry the call's time would have fired.
 - **Bridge requirement (Phase 3):** strict monotonic time is kept on
   purpose. The TS bridge must deliver frames in timestamp order, and before
   any `Tick` of a later time; a frame older than the last accepted time is
-  rejected with `ErrTime`.
+  rejected with `ErrTime`. Implemented: `sessionBridge.ts` flushes buffered
+  frames (`observe`) before every `tick`/`command`, and `core/api` drops and
+  counts (`outOfOrder`) any frame that is still late instead of failing the
+  batch. `api.Runner.Start` builds a new session and fresh completion,
+  overlap, fluctuation and primary detectors every time (ADR 0007).
 - Countdown emits `countdown` events with `remaining` = 3, 2, 1 (whole
   seconds, `ceil(countdownMs/1000)` first) for speech.
 
@@ -95,7 +100,8 @@ back on error, including any timer expiry the call's time would have fired.
   inputs to return to a start state (R-020). The round starts when the
   countdown expires regardless of input; the first ACTIVE frame
   (`frames[0]`) is the initial-offset record for metrics.
-- Timed: completes after `roundDurationMs` of active (unpaused) time.
+- Timed: completes after `roundDurationMs` of active (unpaused) time,
+  only with valid input coverage up to the end (see source loss policy).
 - Self-paced (`completion`): `auto` via `AutoComplete`, a `Completion`
   interface (`Observe(frame) bool`, `Reset()`; `engine.CompletionDetector`
   satisfies it). Only ACTIVE frames are passed; hold time and hysteresis
@@ -111,6 +117,21 @@ back on error, including any timer expiry the call's time would have fired.
   completion both go to REST, or COMPLETE after the last round.
 
 ## Source loss policy (spec 4.4, R-029)
+
+- **Silence rule (in-core, not only a browser watchdog):** during ACTIVE,
+  more than `maxFrameGapMs` of unpaused time without a valid frame (since
+  the previous valid frame, or the attempt start) ends the attempt as
+  `invalidSourceLost`, stamped exactly at `lastValid + maxFrameGapMs`.
+  It fires from `Tick`, a command, or the next frame, whichever comes
+  first; the stamp is the same either way. Paused time does not count.
+- **Timed completion needs coverage:** a timed round only ends
+  `completedTimed` if that silence deadline is not before the scheduled end
+  (`end - lastValid <= maxFrameGapMs`). A frame stamped exactly at the end
+  belongs to the round and is checked before the round ends, so a
+  gap/stale/missing-required-axis frame at the end invalidates it. The
+  end timestamp stays exact; there is no grace period, so the decision is
+  deterministic and needs no frame after the end. Fuzz invariant: no
+  `completedTimed` attempt has an unpaused frame hole > `maxFrameGapMs`.
 
 - During ACTIVE, a frame with `quality.gap` or `quality.stale`, or with any
   `requiredAxes` channel unavailable, or an explicit `SourceLost` call ends
@@ -142,10 +163,10 @@ the caller's frame nor an exported attempt aliases recorded data.
 Total memory is bounded by `rounds * maxAttemptsPerRound * maxSamplesPerRound`
 frames.
 
-A timed round can complete with few or zero frames (e.g. a throttled tab
-delivering one late tick). The session does not judge coverage: **metrics
-(Phase 4) must report low or zero sample coverage as N/A or invalid, never
-as success.**
+A timed round cannot complete with a frame hole longer than
+`maxFrameGapMs` (silence rule). Metrics (Phase 4) must still report low
+sample coverage (e.g. truncated attempts) as N/A or invalid, never as
+success.
 
 ## Config (JSON camelCase)
 
@@ -160,6 +181,7 @@ as success.**
 | `requiredAxes` | none | subset of `brake`/`steering`/`throttle` |
 | `maxSamplesPerRound` | 18000 (5 min at 60 Hz) | 1..216000 |
 | `maxAttemptsPerRound` | 3 | 1..10 |
+| `maxFrameGapMs` | 100 (proposed: 6 frames at 60 Hz) | (0, 3600000] |
 | `AutoComplete` (Go only) | nil | required for `auto`/`either` |
 
 ## Events

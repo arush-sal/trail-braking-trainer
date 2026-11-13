@@ -58,14 +58,19 @@ type Config struct {
 	// MaxAttemptsPerRound caps invalidSourceLost attempts per round; at the
 	// cap the round is used up (neither completed nor skipped).
 	MaxAttemptsPerRound int `json:"maxAttemptsPerRound"`
+	// MaxFrameGapMs: during ACTIVE, more than this much unpaused time
+	// without a valid frame is a source loss (spec 4.4), and a timed round
+	// only completes when valid frames cover it up to its end.
+	MaxFrameGapMs float64 `json:"maxFrameGapMs"`
 	// AutoComplete is required for self-paced auto/either.
 	AutoComplete Completion `json:"-"`
 }
 
 // DefaultConfig returns the proposed defaults: 8 rounds (R-019), 5 s rest and
 // 3 s countdown (spec 3.5, proposed), timed 10 s rounds (placeholder; drills
-// supply real durations), 18000 samples per round (5 min at 60 Hz), and 3
-// attempts per round.
+// supply real durations), 18000 samples per round (5 min at 60 Hz), 3
+// attempts per round and a 100 ms max frame gap (PROPOSED: 6 frames at
+// 60 Hz; matches engine.CompletionConfig.MaxFrameGapMs).
 func DefaultConfig() Config {
 	return Config{
 		Rounds:              8,
@@ -75,6 +80,7 @@ func DefaultConfig() Config {
 		RoundDurationMs:     10000,
 		MaxSamplesPerRound:  18000,
 		MaxAttemptsPerRound: 3,
+		MaxFrameGapMs:       100,
 	}
 }
 
@@ -129,6 +135,9 @@ func (c Config) Validate() error {
 	}
 	if c.MaxSamplesPerRound < 1 || c.MaxSamplesPerRound > MaxSamplesPerRound {
 		return fmt.Errorf("maxSamplesPerRound: must be in [1,%d], got %d", MaxSamplesPerRound, c.MaxSamplesPerRound)
+	}
+	if err := checkDuration("maxFrameGapMs", c.MaxFrameGapMs, false); err != nil {
+		return err
 	}
 	if c.MaxAttemptsPerRound < 1 || c.MaxAttemptsPerRound > MaxAttemptsPerRound {
 		return fmt.Errorf("maxAttemptsPerRound: must be in [1,%d], got %d", MaxAttemptsPerRound, c.MaxAttemptsPerRound)

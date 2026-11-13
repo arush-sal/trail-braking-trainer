@@ -26,6 +26,7 @@ func FuzzSession(f *testing.F) {
 		c.MaxSamplesPerRound = 4
 		c.RequiredAxes = []input.Axis{input.AxisBrake}
 		c.MaxAttemptsPerRound = 2
+		c = withSilenceRule(c)
 		s := mustNew(t, c)
 		now, lastEv := 0.0, 0.0
 		cmds := []Command{CmdStart, CmdPause, CmdResume, CmdCompleteRound, CmdSkipRound, CmdStop}
@@ -124,6 +125,11 @@ func checkInvariants(t *testing.T, s *Session) {
 		if a.EndMs < a.StartMs || len(a.Frames) > s.cfg.MaxSamplesPerRound || (a.Truncated && len(a.Frames) != s.cfg.MaxSamplesPerRound) {
 			t.Fatalf("bad attempt %+v", a)
 		}
+		if a.Outcome == OutcomeCompletedTimed && !a.Truncated {
+			if h := coverageHole(a); h > s.cfg.MaxFrameGapMs {
+				t.Fatalf("completedTimed with a %v ms unpaused frame hole", h)
+			}
+		}
 		if a.Round < 1 || a.Round > s.cfg.Rounds {
 			t.Fatalf("round %d out of range", a.Round)
 		}
@@ -137,4 +143,23 @@ func checkInvariants(t *testing.T, s *Session) {
 	if (s.state == Complete) != (s.done == s.cfg.Rounds) {
 		t.Fatalf("state %s with %d/%d done", s.state, s.done, s.cfg.Rounds)
 	}
+}
+
+// coverageHole is the largest unpaused stretch of a finished attempt without
+// a frame, counting from its start to its end.
+func coverageHole(a Attempt) float64 {
+	pts := []float64{a.StartMs}
+	for _, f := range a.Frames {
+		pts = append(pts, f.ReceivedMonoMs)
+	}
+	pts = append(pts, a.EndMs)
+	worst := 0.0
+	for i := 1; i < len(pts); i++ {
+		h := pts[i] - pts[i-1]
+		for _, p := range a.Paused {
+			h -= max(0, min(p.EndMs, pts[i])-max(p.StartMs, pts[i-1]))
+		}
+		worst = max(worst, h)
+	}
+	return worst
 }

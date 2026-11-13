@@ -8,13 +8,13 @@ describe('stats', () => {
     const v = Array.from({ length: 100 }, (_, i) => i + 1);
     expect(summarize(v)).toEqual({ count: 100, p50: 50, p95: 95, max: 100 });
   });
-  it('tracker counts changed timestamps per second and duplicates', () => {
+  it('tracker derives changes from values, not timestamps', () => {
     const t = createDeviceTracker();
-    t.record(0, 1);
-    t.record(100, 1);
-    t.record(200, 2);
-    t.record(1500, 3);
-    expect(t.stats(1500)).toEqual({ hz: 1, polls: 4, duplicates: 1 });
+    expect(t.record(0, [0, 0])).toBe(true);
+    expect(t.record(100, [0, 0])).toBe(false);
+    expect(t.record(200, [0, 0.5])).toBe(true);
+    expect(t.record(1500, [1, 0.5])).toBe(true);
+    expect(t.stats(1500)).toEqual({ hz: 1, polls: 4, unchanged: 1 });
   });
   it('capabilities detection', () => {
     expect(detectCapabilities({})).toEqual({ gamepadApi: false, speechRecognition: false, audioContext: false, secureContext: false });

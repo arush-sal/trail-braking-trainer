@@ -162,6 +162,34 @@ Every browser behavior below is **UNVERIFIED** pending manual tests recorded in
 - A denied permission, rejected Origin and unreachable collector all look like `1006` to the
   page; the UI message lists all three causes.
 
+#### Public-information notes (from `docs/research/public-evidence.md` section 6) - UNVERIFIED locally
+
+- Chrome 147 release notes (stable 2026-04-07): WebSocket connections to local addresses now
+  trigger Local Network Access permission prompts. Permissions: `loopback-network`
+  (127.0.0.0/8, ::1, localhost) and `local-network` (RFC1918, link-local, ULA, `.local`).
+- `ws://` from `https://` is exempt from mixed content only for private/loopback IP literals,
+  `localhost` and `.local`, and only once the prompt is granted. Other names need `wss://`.
+- `http://` (insecure) top-level pages are auto-denied LNA permissions, so an `http://` LAN-hosted
+  trainer reaching another LAN host is likely blocked in current Chrome. `http://localhost` ->
+  `ws://127.0.0.1` does not cross address spaces and should not prompt.
+- The legacy permission name `local-network-access` crashed older Chrome renderers; the client
+  never queries it.
+- Safari/WebKit (bugs 171934, 173161, 279249): `ws://` from HTTPS is likely rejected as mixed
+  content even to `127.0.0.1`. Use `wss://` with a locally trusted certificate, or serve the
+  trainer from `http://localhost`.
+- Firefox: LNA prompting is rolling out (Firefox 151+, pref `network.lna.blocking`); WebSocket
+  specifics are unknown.
+
+#### Client behavior
+
+- On the Connect click (a user gesture), the panel makes a best-effort
+  `navigator.permissions.query({name: 'loopback-network' | 'local-network'})` for the target
+  host, wrapped in try/catch. It shows `granted` / `prompt` / `denied` / `unsupported`.
+- If the state is `denied`, the panel does not connect and tells the user to allow access in
+  the browser's site settings. Otherwise it connects; the browser shows any prompt itself.
+- Safari + `https:` page + `ws://` target: the panel shows a non-blocking warning suggesting
+  `wss://` with a locally trusted certificate.
+
 ## Running the MOCK collector
 
 ```bash

@@ -13,22 +13,28 @@ export const summarize = (v: readonly number[]): Summary => ({
   max: v.length ? Math.max(...v) : null,
 });
 
-/** Per-device update tracker. Chrome only bumps `timestamp` when state changes, so Hz = rate of CHANGES. */
+/**
+ * Per-device update tracker. Gamepad.timestamp is platform-specific (per event, per report, per poll, or
+ * unsupported), so changes are detected by comparing values with the previous poll. Timestamp is diagnostics only.
+ */
 export function createDeviceTracker() {
   let changes: number[] = [];
-  let lastTs: number | null = null;
+  let prev: readonly number[] | null = null;
   let polls = 0;
-  let duplicates = 0;
+  let unchanged = 0;
   return {
-    record(nowMs: number, timestamp: number) {
+    /** Returns whether any axis/button value changed since the previous poll (first poll counts as changed). */
+    record(nowMs: number, values: readonly number[]): boolean {
       polls++;
-      if (lastTs !== null && timestamp === lastTs) duplicates++;
-      else changes.push(nowMs);
-      lastTs = timestamp;
+      const changed = !prev || prev.length !== values.length || values.some((v, i) => v !== prev![i]);
+      if (changed) changes.push(nowMs);
+      else unchanged++;
+      prev = [...values];
+      return changed;
     },
     stats(nowMs: number) {
       changes = changes.filter((t) => nowMs - t <= 1000);
-      return { hz: changes.length, polls, duplicates };
+      return { hz: changes.length, polls, unchanged };
     },
   };
 }

@@ -28,4 +28,13 @@ describe('AudioCheck', () => {
     expect(inj.dispose).not.toHaveBeenCalled();
     d.mockRestore();
   });
+  it('shows total latency (or unknown) and background warning', () => {
+    const mk = (totalMs: number | null) => ({ state: 'running', volume: 0.15, backgroundRisk: true, latency: { summary: () => ({ count: 0, p50: 0, p95: 0, max: 0 }) }, audioLatency: () => ({ baseLatencyMs: 10, outputLatencyMs: 20, totalMs }), onState: () => () => {}, onBackgroundRisk: () => () => {}, setFrame: vi.fn(), silence: vi.fn() }) as unknown as ToneEngine;
+    render(<AudioCheck getLatestFrame={() => null} engine={mk(30)} />);
+    expect(screen.getByText('30 ms')).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toMatch(/hidden/);
+    cleanup();
+    render(<AudioCheck getLatestFrame={() => null} engine={mk(null)} />);
+    expect(screen.getByText('unknown')).toBeTruthy();
+  });
 });

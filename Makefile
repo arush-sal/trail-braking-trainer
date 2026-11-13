@@ -46,12 +46,14 @@ security: ## govulncheck, OSV-Scanner, Trivy fs, zizmor (tools must be on PATH)
 	zizmor --persona=regular .github/workflows
 
 clean: ## Remove build outputs
-	rm -rf apps/web/dist $(WASM_OUT)
+	rm -rf apps/web/dist apps/web/dist-e2e $(WASM_OUT)
 
 test-wasm: wasm ## Shared frame fixtures + TS mock frames through the built core.wasm (Node)
 	npm run test:wasm -w apps/web
 
-test-e2e: build ## Playwright smoke tests against the built bundle (Chromium)
+test-e2e: build ## Playwright tests against an e2e-mode bundle (Chromium); checks prod has no test hooks
+	@if grep -rq __tbtTest apps/web/dist; then echo "production bundle contains test hooks" >&2; exit 1; fi
+	VITE_APP_VERSION=$(VERSION) npm run build -w apps/web -- --mode e2e --outDir dist-e2e
 	npx playwright test
 
 # Declared by the spec command contract; owned by later phases.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createGt7Client, type Gt7Event, type SocketLike } from './gt7Client';
+import { createGt7Client, queryLnaPermission, type Gt7Event, type SocketLike } from './gt7Client';
 
 function fake() {
   const sent: string[] = [];
@@ -122,5 +122,23 @@ describe('createGt7Client hardening', () => {
     expect(ev.some((e) => e.type === 'frame')).toBe(false);
     expect(c.counters().frames).toBe(0);
     c.close();
+  });
+});
+
+describe('queryLnaPermission', () => {
+  const perms = (impl: (name: string) => Promise<{ state: string }>) => ({ query: (d: { name: string }) => impl(d.name) }) as unknown as Permissions;
+  it('queries the right name and reports its state; never the legacy name', async () => {
+    const asked: string[] = [];
+    const p = perms(async (n) => (asked.push(n), { state: 'prompt' }));
+    expect(await queryLnaPermission('ws://127.0.0.1:8787', p)).toBe('prompt');
+    expect(await queryLnaPermission('ws://192.168.1.2:8787', p)).toBe('prompt');
+    expect(asked).toEqual(['loopback-network', 'local-network']);
+    expect(asked).not.toContain('local-network-access');
+  });
+  it('is best-effort: throws/missing -> unsupported, public host -> not-needed', async () => {
+    expect(await queryLnaPermission('ws://127.0.0.1', perms(async () => { throw new TypeError('bad name'); }))).toBe('unsupported');
+    expect(await queryLnaPermission('ws://127.0.0.1', undefined)).toBe('unsupported');
+    expect(await queryLnaPermission('wss://x.example.com', perms(async () => ({ state: 'granted' })))).toBe('not-needed');
+    expect(await queryLnaPermission('ws://127.0.0.1', perms(async () => ({ state: 'denied' })))).toBe('denied');
   });
 });

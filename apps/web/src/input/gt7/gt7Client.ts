@@ -1,7 +1,7 @@
 // Browser WebSocket client for the DRAFT GT7 collector protocol v1 (docs/input-protocol.md).
 // Phase 1 prototype, exercised only against the MOCK collector so far.
 import type { InputFrame } from '../types';
-import { CLIENT_MAX_MESSAGE_BYTES, ProtocolError, SeqTracker, exceedsBytes, buildHello, checkUrl, closeToError, mapFrame, parseServerMessage, parseWelcome, type ClientError, type Welcome } from './protocol';
+import { CLIENT_MAX_MESSAGE_BYTES, ProtocolError, SeqTracker, exceedsBytes, buildHello, checkUrl, closeToError, lnaPermissionFor, mapFrame, parseServerMessage, parseWelcome, type ClientError, type Welcome } from './protocol';
 
 export type Gt7Status = 'connecting' | 'live' | 'stale' | 'reconnecting' | 'closed' | 'error';
 export type Gt7Counters = { frames: number; gaps: number; missing: number; duplicates: number; outOfOrder: number; reconnects: number };
@@ -176,4 +176,18 @@ export function createGt7Client(o: Gt7ClientOptions): Gt7Client {
     },
     counters: () => ({ ...counters }),
   };
+}
+
+export type LnaState = 'granted' | 'prompt' | 'denied' | 'unsupported' | 'not-needed';
+
+/** Best-effort Chrome Local Network Access permission check (spec: Chrome 147+ gates local WebSockets). Never throws. */
+export async function queryLnaPermission(url: string, permissions: Permissions | undefined = globalThis.navigator?.permissions): Promise<LnaState> {
+  const name = lnaPermissionFor(url);
+  if (!name) return 'not-needed';
+  try {
+    const { state } = await permissions!.query({ name } as unknown as PermissionDescriptor);
+    return state === 'granted' || state === 'prompt' || state === 'denied' ? state : 'unsupported';
+  } catch {
+    return 'unsupported';
+  }
 }
