@@ -1,0 +1,9 @@
+node_modules/
+apps/web/dist/
+apps/web/public/wasm/
+*.tsbuildinfo
+coverage/
+.worktrees/
+.env
+.env.*
+*.log

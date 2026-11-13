@@ -1,0 +1,10 @@
+:root { color-scheme: dark; }
+body { margin: 0; background: #12141a; color: #eef0f4; font: 16px/1.5 system-ui, sans-serif; }
+main { max-width: 40rem; margin: 0 auto; padding: 1.5rem; }
+.banner { background: #4a3500; border: 2px solid #ffc83d; padding: 0.75rem 1rem; font-weight: 600; }
+.toggle { font: inherit; font-size: 1.5rem; padding: 1rem 2rem; min-width: 14rem; background: #3d7bff; color: #fff; border: 2px solid #fff; border-radius: 0.5rem; cursor: pointer; }
+.toggle:focus-visible { outline: 4px solid #ffc83d; outline-offset: 3px; }
+.readout { display: grid; grid-template-columns: max-content 1fr; gap: 0.5rem 1.5rem; font-size: 1.5rem; margin: 2rem 0; }
+.readout dt { color: #b8bfcc; }
+.readout dd { margin: 0; font-variant-numeric: tabular-nums; }
+footer { color: #b8bfcc; font-size: 0.875rem; }

@@ -1,0 +1,21 @@
+{
+  "name": "trail-braking-trainer",
+  "private": true,
+  "engines": {
+    "node": "26.13.1",
+    "npm": "11.20.0"
+  },
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w apps/web",
+    "build": "npm run build -w apps/web",
+    "test": "npm run test -w apps/web",
+    "lint": "npm run lint -w apps/web",
+    "typecheck": "npm run typecheck -w apps/web"
+  },
+  "overrides": {
+    "minimatch": "11.0.1"
+  }
+}
