@@ -206,6 +206,11 @@ gh attestation verify trail-braking-trainer_${V}_web.tar.gz "${A[@]}" \
   --predicate-type https://spdx.dev/Document/v2.3
 ```
 
+Each release has two kinds of GitHub attestation, so the tarball appears in both:
+SLSA build provenance (`https://slsa.dev/provenance/v1`: how and from which commit the
+three files were built) and an SPDX SBOM attestation (`https://spdx.dev/Document/v2.3`:
+what the tarball contains). They are complementary, not duplicates.
+
 The tarball's `build-manifest.json` lists version, commit, build time and the
 sha256 of every bundle file. Details: `docs/release-process.md`.
 
