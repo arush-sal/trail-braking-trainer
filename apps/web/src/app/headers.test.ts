@@ -28,7 +28,8 @@ const csp = new Map(all.get('content-security-policy')!.split(';').map((d) => d.
 describe('_headers', () => {
   it('CSP allows Go WASM without unsafe-eval or inline script, and locks down the rest', () => {
     expect(csp.get('default-src')).toEqual(["'none'"]);
-    expect(csp.get('script-src')).toEqual(["'self'", "'wasm-unsafe-eval'"]);
+    // Cloudflare Web Analytics beacon (owner decision, ADR 0009): its script origin only.
+    expect(csp.get('script-src')).toEqual(["'self'", "'wasm-unsafe-eval'", 'https://static.cloudflareinsights.com']);
     expect(csp.get('style-src')).toEqual(["'self'"]);
     expect(csp.get('img-src')).toEqual(["'self'"]);
     expect(csp.get('font-src')).toEqual(["'self'"]);
@@ -36,8 +37,9 @@ describe('_headers', () => {
     expect(csp.get('base-uri')).toEqual(["'none'"]);
     expect(csp.get('frame-ancestors')).toEqual(["'none'"]);
     expect(csp.get('form-action')).toEqual(["'none'"]);
-    // Same-origin assets + user-initiated collector WebSocket (loopback or LAN host, see docs/security.md).
-    expect(csp.get('connect-src')).toEqual(["'self'", 'ws:', 'wss:']);
+    // Same-origin assets + user-initiated collector WebSocket (loopback or LAN host, see docs/security.md)
+    // + the Cloudflare Web Analytics report endpoint (ADR 0009). No other third-party HTTP.
+    expect(csp.get('connect-src')).toEqual(["'self'", 'ws:', 'wss:', 'https://cloudflareinsights.com']);
     // Would rewrite ws://127.0.0.1 to wss:// and break the local collector.
     expect(csp.has('upgrade-insecure-requests')).toBe(false);
     expect(all.get('content-security-policy')).not.toMatch(/'unsafe-eval'|unsafe-inline|\*/);

@@ -5,11 +5,14 @@
 # - connect-src ws:/wss: allows the user-entered GT7 collector URL (loopback or a LAN IP;
 #   CSP cannot express "private addresses only"). No upgrade-insecure-requests: it would turn
 #   ws://127.0.0.1 into wss:// and break the local collector.
+# - Cloudflare Web Analytics (owner decision, ADR 0009): Cloudflare injects its beacon script
+#   (static.cloudflareinsights.com), which reports page-load metrics to cloudflareinsights.com.
+#   Cookieless; no session data, inputs or results are sent.
 # - core.wasm gets application/wasm from Cloudflare by file extension; no override needed.
 # - wasm_exec.js and core.wasm are content-hashed under /assets/ (apps/web/vite/wasmAssets.ts),
 #   so each index.html names exactly the runtime + core it was built with.
 /*
-  Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' ws: wss:; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' ws: wss: https://cloudflareinsights.com; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
   Cross-Origin-Opener-Policy: same-origin

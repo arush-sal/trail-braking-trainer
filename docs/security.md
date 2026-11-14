@@ -47,7 +47,7 @@ repository at the date above. Hardware and real-browser behavior is still unveri
 | **T**ampered or hostile collector frames | 2 | `CLIENT_MAX_MESSAGE_BYTES` cap. Strict parser (`protocol.ts`). Duplicate and out-of-order frames are dropped. Gaps are counted. Go `Decode` rejects malformed frames. Steering is forced unavailable | - |
 | **T**ampered bundle in transit | 3 | HTTPS (`workers.dev` sits under the HSTS-preloaded `.dev` TLD; HSTS for the custom domain is a Cloudflare zone setting). `nosniff`. CSP `script-src 'self'` | No SRI. All scripts are same-origin, so it would add nothing |
 | **R**epudiation | - | Not applicable: no accounts and no server-side actions | - |
-| **I**nformation disclosure: telemetry or session data leaves the device | 1, 3 | No storage APIs, no analytics, no network calls except same-origin assets and the user-initiated WS. CSP `connect-src 'self' ws: wss:` blocks third-party HTTP. `Referrer-Policy: no-referrer` | `ws:`/`wss:` lets injected code open a WebSocket to any host (trade-off below) |
+| **I**nformation disclosure: telemetry or session data leaves the device | 1, 3 | No storage APIs, no network calls from app code except same-origin assets and the user-initiated WS. Production only: Cloudflare Web Analytics beacon, injected at the edge, page-load metrics only (ADR 0009). CSP `connect-src 'self' ws: wss: https://cloudflareinsights.com` blocks all other third-party HTTP. `Referrer-Policy: no-referrer` | `ws:`/`wss:` lets injected code open a WebSocket to any host (trade-off below) |
 | **I**nformation disclosure: microphone | 5 | Voice is off by default. A privacy notice must be acknowledged before enabling. On-device recognition is used only when the browser reports it. Status shows whether processing may be remote. `Permissions-Policy: microphone=(self)` | Browser vendor processing (disclosed) |
 | **I**nformation disclosure: secrets in the bundle | 3, 4 | No secrets exist client-side. The Cloudflare token lives only in the `production` environment. Bundle scan below | - |
 | **D**oS: collector flood, huge frames | 2 | Message size cap. Bounded reconnect backoff. UI refreshes at 4-10 Hz, not per sample. Session memory is capped in the core (`maxSamplesPerRound`) | - |
@@ -63,7 +63,7 @@ Checked on 2026-11-14 against `apps/web/src` and a production `make build`:
 |---|---|
 | `localStorage`, `sessionStorage`, `indexedDB`, `serviceWorker`, `caches`, `document.cookie`, `sendBeacon` in `apps/web/src` and `apps/web/dist` | None found |
 | Network calls in source | Only `fetch` of the same-origin, content-hashed `assets/core-<hash>.wasm`, a `<script>` for same-origin `assets/wasm_exec-<hash>.js`, and `new WebSocket(url)` after the user clicks Connect (`gt7Client.ts`). No other `fetch`, `XMLHttpRequest` or `EventSource` |
-| Third-party requests at runtime | None. The e2e specs assert that no third-party origins are requested, and the CSP blocks them (verified below) |
+| Third-party requests at runtime | From app code: none. On the production host Cloudflare injects its Web Analytics beacon (`static.cloudflareinsights.com` script, reports to `cloudflareinsights.com`; cookieless, page views and load timing, no session data; ADR 0009). The e2e specs assert that no third-party origins are requested, and the CSP blocks them (verified below) |
 | Secrets in the bundle | None. The only `https://` strings in `dist/assets/*.js` are React error-docs and namespace URLs, plus two public research links rendered as `<a>`. `core.wasm` contains only `https://go.dev/doc/godebug` and no local paths |
 | Tokens in URLs | None. The pairing token is sent only in the hello message. `checkUrl` rejects URLs that carry credentials (`protocol.test.ts`) |
 | Test hooks in production | `make test-e2e` fails if `__tbtTest` appears in `apps/web/dist`. Re-checked: 0 matches |
@@ -79,7 +79,7 @@ set by two rules is comma-joined, so `Cache-Control` is never set on `/*`.
 
 | Header | Value / reason |
 |---|---|
-| CSP `script-src 'self' 'wasm-unsafe-eval'` | Go WASM needs `'wasm-unsafe-eval'` to compile. `'unsafe-eval'` is **not** needed (verified). There are no inline scripts |
+| CSP `script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com` | Go WASM needs `'wasm-unsafe-eval'` to compile. The Cloudflare origin is the Web Analytics beacon only (ADR 0009). `'unsafe-eval'` is **not** needed (verified). There are no inline scripts |
 | CSP `style-src 'self'` | React's `style={}` goes through CSSOM, which CSP allows. Verified: 0 violations through the results graphs |
 | CSP `img-src`/`font-src` `'self'`, `default-src 'none'`, `object-src 'none'`, `base-uri 'none'`, `form-action 'none'`, `frame-ancestors 'none'`, `manifest-src 'self'` | Lock-down |
 | CSP `connect-src 'self' ws: wss:` | Trade-off: the collector URL is user-supplied and may be any LAN IP. CSP cannot express "private addresses only", so `ws://127.0.0.1:* ws://localhost:*` alone would break LAN use. HTTP(S) to third parties stays blocked. If LAN use is dropped, narrow this to `ws://127.0.0.1:* ws://localhost:*` |
