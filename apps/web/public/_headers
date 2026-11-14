@@ -1,0 +1,30 @@
+# Cloudflare static headers (Pages and Workers Static Assets use this same file format).
+# Rationale and trade-offs: docs/security.md. Checked by apps/web/src/app/headers.test.ts and,
+# in a real browser, by tests/e2e/csp.spec.ts.
+# - 'wasm-unsafe-eval' lets the Go core compile; no 'unsafe-eval' and no inline script.
+# - connect-src ws:/wss: allows the user-entered GT7 collector URL (loopback or a LAN IP;
+#   CSP cannot express "private addresses only"). No upgrade-insecure-requests: it would turn
+#   ws://127.0.0.1 into wss:// and break the local collector.
+# - core.wasm gets application/wasm from Cloudflare by file extension; no override needed.
+# - wasm_exec.js and core.wasm are content-hashed under /assets/ (apps/web/vite/wasmAssets.ts),
+#   so each index.html names exactly the runtime + core it was built with.
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' ws: wss:; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Cross-Origin-Opener-Policy: same-origin
+  Permissions-Policy: gamepad=(self), microphone=(self), camera=(), geolocation=(), usb=(), hid=(), serial=(), bluetooth=(), midi=(), payment=(), display-capture=(), screen-wake-lock=(), xr-spatial-tracking=()
+
+# Content-hashed (app JS/CSS, Go runtime, core.wasm): safe to cache forever.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Not hashed: revalidate, so a new deploy's index.html (and its hashed asset names) is picked up.
+# A tab opened before a deploy keeps its own consistent set until reload; if the old hashed
+# files are gone by then, the core-load alert / boot message asks for a reload.
+/
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache
+/version.json
+  Cache-Control: no-cache

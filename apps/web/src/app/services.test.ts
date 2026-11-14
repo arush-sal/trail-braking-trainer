@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServices } from './services';
 import type { SynthLike, UtteranceLike } from '../audio/speech/announcer';
 import type { RecognitionLike } from '../controls/voice';
+import { fakeCtx } from '../audio/sonify/fakeCtx';
 
 afterEach(() => vi.useRealTimers());
 
@@ -26,6 +27,39 @@ describe('createServices', () => {
     await svc.voice.enable({ privacyAcknowledged: true });
     rec!.onresult!({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: 'stop', confidence: 0.9 } }] } as never);
     expect(s.spoken).toEqual(['Say stop again to confirm.']);
+  });
+
+  it('voice failures after enabling are spoken (eyes-free), not only shown', async () => {
+    const s = fakeSynth();
+    let rec: RecognitionLike | null = null;
+    class Rec {
+      continuous = false; interimResults = false; lang = ''; maxAlternatives = 1;
+      onstart = null; onend = null; onerror: RecognitionLike['onerror'] = null; onresult = null;
+      constructor() { rec = this as unknown as RecognitionLike; }
+      start() {} stop() {} abort() {}
+    }
+    const svc = createServices({ ...s.speech, voiceCtor: Rec as never, queryMic: async () => 'granted' });
+    await svc.voice.enable({ privacyAcknowledged: true });
+    rec!.onerror!({ error: 'not-allowed' });
+    expect(s.spoken).toEqual(['Microphone denied. Use buttons.']);
+    const d = fakeSynth();
+    const svc2 = createServices({ ...d.speech, voiceCtor: Rec as never, queryMic: async () => 'denied' });
+    await svc2.voice.enable({ privacyAcknowledged: true });
+    expect(d.spoken).toEqual(['Microphone denied. Use buttons.']);
+  });
+
+  it('session audio suspended or closed after running is spoken once per transition', async () => {
+    const s = fakeSynth();
+    const f = fakeCtx();
+    const svc = createServices({ ...s.speech, audioCtx: () => f.ctx, getGamepads: () => [], raf: null });
+    await svc.sonify.unlock();
+    expect(s.spoken).toEqual([]);
+    f.raw.state = 'suspended';
+    f.raw.onstatechange!();
+    f.raw.onstatechange!();
+    expect(s.spoken).toEqual(['Audio paused. Press enable audio.']);
+    await svc.sonify.unlock();
+    expect(s.spoken).toHaveLength(1);
   });
 
   it('polls gamepad command buttons independently of the training source, only while needed', () => {

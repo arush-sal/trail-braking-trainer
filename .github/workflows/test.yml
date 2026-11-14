@@ -68,6 +68,18 @@ jobs:
       - name: E2E smoke tests
         run: make test-e2e
 
+      - name: Performance measurements and soft budgets
+        run: make perf
+
+      - name: Upload performance report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-report
+          path: test-results/perf.json
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Upload Playwright report
         if: ${{ failure() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -84,3 +96,54 @@ jobs:
           path: apps/web/dist/
           if-no-files-found: error
           retention-days: 3
+
+  browsers:
+    # Firefox and WebKit builds shipped with Playwright: automated engine coverage, not real
+    # Firefox/Safari validation (docs/validation-log.md). Chromium runs in the `check` job.
+    name: E2E (${{ matrix.browser }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [firefox, webkit]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup
+        run: make setup
+
+      - name: Install Playwright ${{ matrix.browser }}
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+
+      - name: E2E (${{ matrix.browser }})
+        env:
+          E2E_PROJECT: ${{ matrix.browser }}
+        run: make test-e2e
+
+      - name: Upload Playwright report
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report-${{ matrix.browser }}
+          path: playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7

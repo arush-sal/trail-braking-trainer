@@ -83,10 +83,13 @@ function loadScript(src: string): Promise<void> {
 
 async function browserLoader(): Promise<CoreApi> {
   if (typeof WebAssembly === 'undefined') throw new Error('This browser does not support WebAssembly; the core cannot run.');
-  const base = `${import.meta.env.BASE_URL}wasm/`;
-  await loadScript(`${base}wasm_exec.js`);
+  const base = import.meta.env.BASE_URL;
+  // Hashed URLs (vite/wasmAssets.ts): this page only ever knows one runtime + core pair, so a
+  // runtime already loaded by a failed earlier attempt is the matching one and safe to reuse;
+  // every attempt still fetches core.wasm and runs it in a fresh Go instance.
+  if (!('Go' in globalThis)) await loadScript(`${base}${import.meta.env.VITE_WASM_EXEC_URL}`);
   const go = new (globalThis as unknown as { Go: new () => { importObject: WebAssembly.Imports; run(i: WebAssembly.Instance): Promise<void> } }).Go();
-  const res = await fetch(`${base}core.wasm`);
+  const res = await fetch(`${base}${import.meta.env.VITE_CORE_WASM_URL}`);
   if (!res.ok) throw new Error(`Failed to fetch core.wasm: HTTP ${res.status}`);
   let instance: WebAssembly.Instance;
   try {
@@ -95,6 +98,7 @@ async function browserLoader(): Promise<CoreApi> {
     // Wrong MIME type on some static hosts: fall back to buffered instantiate.
     ({ instance } = await WebAssembly.instantiate(await res.arrayBuffer(), go.importObject));
   }
+  delete (globalThis as { tbtCore?: unknown }).tbtCore; // never pick up a stale core from an earlier attempt
   void go.run(instance).catch(() => undefined);
   for (let i = 0; i < 500; i++) {
     const t = (globalThis as { tbtCore?: TbtCore }).tbtCore;

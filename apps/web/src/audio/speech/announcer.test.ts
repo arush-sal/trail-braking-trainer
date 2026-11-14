@@ -3,15 +3,22 @@ import { createAnnouncer, type UtteranceLike } from './announcer';
 
 afterEach(() => vi.useRealTimers());
 
+let voiceList: { name: string; lang: string; localService?: boolean }[] = [];
+let listeners: (() => void)[] = [];
+
 function setup() {
+  voiceList = [{ name: 'A', lang: 'en-US', localService: true }, { name: 'B', lang: 'de-DE', localService: true }];
+  listeners = [];
   const spoken: UtteranceLike[] = [];
   const synth = {
     speaking: false,
     speak: vi.fn((u: UtteranceLike) => { spoken.push(u); synth.speaking = true; }),
     cancel: vi.fn(() => { synth.speaking = false; }),
-    getVoices: () => [{ name: 'A', lang: 'en-US' }, { name: 'B', lang: 'de-DE' }],
+    getVoices: () => voiceList,
+    addEventListener: (_t: string, cb: () => void) => { listeners.push(cb); },
+    removeEventListener: () => {},
   };
-  const a = createAnnouncer({ synth, createUtterance: (text) => ({ text, rate: 1, voice: null, onstart: null, onend: null, onerror: null }) });
+  const a = createAnnouncer({ synth, lang: 'en-US', createUtterance: (text) => ({ text, rate: 1, pitch: 0, volume: 0, lang: '', voice: null, onstart: null, onend: null, onerror: null }) });
   const finish = () => { const u = spoken[spoken.length - 1]!; synth.speaking = false; u.onend?.(); };
   return { a, synth, spoken, finish };
 }
@@ -148,5 +155,97 @@ describe('announcer', () => {
     synth.cancel.mockClear();
     vi.advanceTimersByTime(60000);
     expect(synth.cancel).not.toHaveBeenCalled();
+  });
+  it('auto-picks the most natural voice when none is chosen, with natural prosody defaults', () => {
+    const { a, spoken } = setup();
+    voiceList = [{ name: 'eSpeak', lang: 'en-US', localService: true }, { name: 'Google US English', lang: 'en-US', localService: false }, { name: 'Zed Natural', lang: 'de-DE', localService: true }];
+    a.setAllowNetwork(true);
+    a.say('x');
+    expect((spoken[0]!.voice as { name: string }).name).toBe('Google US English');
+    expect(spoken[0]).toMatchObject({ rate: 1, pitch: 1, volume: 1, lang: 'en-US' });
+    expect(a.activeVoice()?.name).toBe('Google US English');
+  });
+  it('queries and ranks the voice list once until voiceschanged (Firefox/Linux can expose >10k voices)', () => {
+    const { a, synth, finish } = setup();
+    const get = vi.spyOn(synth, 'getVoices');
+    for (let i = 0; i < 5; i++) { a.rankedVoices(); a.activeVoice(); void a.networkOnly; a.voices(); }
+    a.say('one'); finish();
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(a.rankedVoices()).toBe(a.rankedVoices()); // stable identity for renders
+    voiceList = [{ name: 'C', lang: 'en-US', localService: true }];
+    listeners.forEach((l) => l());
+    expect(a.rankedVoices().map((v) => v.name)).toEqual(['C']);
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+  it('keeps re-querying while the voice list is empty (some browsers never fire voiceschanged)', () => {
+    const { a } = setup();
+    voiceList = [];
+    expect(a.rankedVoices()).toEqual([]);
+    voiceList = [{ name: 'Late', lang: 'en-US', localService: true }];
+    expect(a.rankedVoices().map((v) => v.name)).toEqual(['Late']);
+  });
+  it('re-picks when the voices list arrives later (voiceschanged) unless the user chose', () => {
+    const { a, spoken, finish } = setup();
+    voiceList = [];
+    const cb = vi.fn(); a.onVoicesChanged(cb);
+    a.say('one'); finish();
+    expect(spoken[0]!.voice).toBeNull();
+    voiceList = [{ name: 'Plain', lang: 'en-US', localService: true }, { name: 'Aria Online (Natural)', lang: 'en-US', localService: false }];
+    a.setAllowNetwork(true);
+    listeners.forEach((l) => l());
+    expect(cb).toHaveBeenCalled();
+    expect(a.rankedVoices()[0]!.name).toBe('Aria Online (Natural)');
+    a.say('two');
+    expect((spoken[1]!.voice as { name: string }).name).toBe('Aria Online (Natural)');
+    a.setVoice('Plain'); finish();
+    a.say('three');
+    expect((spoken[2]!.voice as { name: string }).name).toBe('Plain');
+    a.setVoice(null); finish();
+    a.say('four');
+    expect((spoken[3]!.voice as { name: string }).name).toBe('Aria Online (Natural)');
+  });
+  it('automatic selection ignores network voices until consent is given', () => {
+    const { a, spoken, finish } = setup();
+    voiceList = [{ name: 'Plain', lang: 'en-US', localService: true }, { name: 'Aria Online (Natural)', lang: 'en-US', localService: false }];
+    expect(a.allowNetwork).toBe(false);
+    a.say('one'); finish();
+    expect((spoken[0]!.voice as { name: string }).name).toBe('Plain');
+    a.setAllowNetwork(true);
+    a.say('two');
+    expect((spoken[1]!.voice as { name: string }).name).toBe('Aria Online (Natural)');
+  });
+  it('a chosen network voice is ignored without consent', () => {
+    const { a, spoken, finish } = setup();
+    voiceList = [{ name: 'Plain', lang: 'en-US', localService: true }, { name: 'Net', lang: 'en-US', localService: false }];
+    a.setVoice('Net');
+    a.say('one'); finish();
+    expect((spoken[0]!.voice as { name: string }).name).toBe('Plain');
+    a.setAllowNetwork(true);
+    a.say('two');
+    expect((spoken[1]!.voice as { name: string }).name).toBe('Net');
+  });
+  it('voices without a localService flag are not treated as local', () => {
+    const { a, spoken } = setup();
+    voiceList = [{ name: 'Mystery', lang: 'en-US' }];
+    a.say('hi', { category: 'countdown' });
+    expect(spoken[0]!.voice).toBeNull();
+  });
+  it('only network voices: summaries stay silent, countdown/alerts use the browser default, notice flag set', () => {
+    const { a, spoken } = setup();
+    voiceList = [{ name: 'Net', lang: 'en-US', localService: false }];
+    expect(a.networkOnly).toBe(true);
+    expect(a.say('sum', { category: 'roundSummary' })).toBe(false);
+    expect(a.say('sess', { category: 'sessionSummary' })).toBe(false);
+    expect(a.say('3', { category: 'countdown' })).toBe(true);
+    expect(spoken.map((u) => u.text)).toEqual(['3']);
+    expect(spoken[0]!.voice).toBeNull();
+    a.setAllowNetwork(true);
+    expect(a.networkOnly).toBe(false);
+    expect(a.say('sum', { category: 'roundSummary' })).toBe(true);
+  });
+  it('local voices present: networkOnly is false and summaries speak', () => {
+    const { a } = setup();
+    expect(a.networkOnly).toBe(false);
+    expect(a.say('sum', { category: 'roundSummary' })).toBe(true);
   });
 });

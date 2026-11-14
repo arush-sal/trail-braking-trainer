@@ -3,7 +3,9 @@
 import { SonifyEngine } from '../audio/sonify/SonifyEngine';
 import type { AudioAlert } from '../audio/sonify/types';
 import { createAnnouncer, type AnnouncerOptions } from '../audio/speech/announcer';
-import { commandRejected, confirmStop } from '../audio/speech/phrases';
+import { audioSuspended, commandRejected, confirmStop, micState } from '../audio/speech/phrases';
+import type { CtxLike } from '../audio/synth/ToneEngine';
+import type { LatencySummary } from '../audio/synth/mapping';
 import { createBindings } from '../controls/bindings';
 import { createVoice, type VoiceOptions } from '../controls/voice';
 import type { Command, CommandSource, DispatchResult } from '../controls/dispatcher';
@@ -18,10 +20,11 @@ export type HookAlert = AudioAlert & { latencyMs: number; scheduled: boolean };
 export type TestHook = {
   phrases: string[]; alerts: HookAlert[]; events: SessionEvent[];
   snapshot: () => unknown;
-  audio: () => { state: string; updates: number; alertsScheduled: number };
+  audio: () => { state: string; updates: number; alertsScheduled: number; latency: LatencySummary; alertLatency: LatencySummary };
 };
 
 export type ServicesOptions = AnnouncerOptions & {
+  audioCtx?: () => CtxLike;
   voiceCtor?: VoiceOptions['ctor'];
   queryMic?: VoiceOptions['queryMic'];
   getGamepads?: AdapterOptions['getGamepads'];
@@ -29,7 +32,7 @@ export type ServicesOptions = AnnouncerOptions & {
 };
 
 export function createServices(o: ServicesOptions = {}) {
-  const sonify = new SonifyEngine();
+  const sonify = new SonifyEngine(o.audioCtx);
   const announcer = createAnnouncer({ synth: o.synth, createUtterance: o.createUtterance });
   const runnerRef: { current: SessionRunner | null } = { current: null };
   let trainingMaps: Mappings = {};
@@ -46,6 +49,20 @@ export function createServices(o: ServicesOptions = {}) {
   const voice = createVoice({
     dispatch, ctor: o.voiceCtor, queryMic: o.queryMic,
     onEvent: (e) => { if (e.type === 'confirm-needed') announcer.say(confirmStop(), { priority: 'critical' }); },
+  });
+
+  // Eyes-free recovery cues (spec 8): voice failures and lost session audio are spoken, not only shown.
+  // Speech output does not go through the AudioContext, so it is still heard while that is suspended.
+  let micWas = voice.status;
+  voice.subscribe(() => {
+    const s = voice.status;
+    if (s !== micWas && (s === 'denied' || s === 'error' || s === 'network')) announcer.say(micState(s), { priority: 'critical' });
+    micWas = s;
+  });
+  let audioWas = sonify.state;
+  sonify.onState((s) => {
+    if (audioWas === 'running' && (s === 'suspended' || s === 'closed')) announcer.say(audioSuspended(), { priority: 'critical' });
+    audioWas = s;
   });
 
   // Command buttons work whatever the training source is: a separate, lightweight poll that
@@ -76,7 +93,7 @@ export function createServices(o: ServicesOptions = {}) {
     const h: TestHook = {
       phrases: [], alerts: [], events: [],
       snapshot: () => runnerRef.current?.getSnapshot() ?? null,
-      audio: () => ({ state: sonify.state, updates: sonify.latency.summary().count, alertsScheduled: sonify.alertLatency.summary().count }),
+      audio: () => ({ state: sonify.state, updates: sonify.latency.summary().count, alertsScheduled: sonify.alertLatency.summary().count, latency: sonify.latency.summary(), alertLatency: sonify.alertLatency.summary() }),
     };
     const keep = <T,>(a: T[], v: T) => { a.push(v); if (a.length > HOOK_MAX) a.shift(); };
     let scheduled = 0;

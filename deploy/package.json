@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Workers Static Assets deploy config (ADR 0008). Used by scripts/deploy.sh only."
+}

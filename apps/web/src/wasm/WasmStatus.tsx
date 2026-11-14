@@ -1,6 +1,7 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import { coreBridge } from './coreBridge';
 import { mockFrame } from '../input/mock/mockSource';
+import { coreLoadHelp } from '../app/recovery';
 
 export function WasmStatus() {
   const s = useSyncExternalStore(coreBridge.subscribe, coreBridge.getState);
@@ -10,6 +11,14 @@ export function WasmStatus() {
   return (
     <section aria-label="Core status">
       <h2>Core (WASM)</h2>
+      {s.status === 'error' && (
+        <div role="alert">
+          <p>{coreLoadHelp(s.error ?? 'unknown error')}</p>
+          <button type="button" onClick={() => coreBridge.load().catch(() => undefined)}>
+            Retry loading core
+          </button>
+        </div>
+      )}
       <dl className="readout">
         <dt>Status</dt>
         <dd data-testid="wasm-status">{s.status}</dd>

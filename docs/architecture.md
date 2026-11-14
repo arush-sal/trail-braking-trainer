@@ -21,6 +21,21 @@ command dispatcher read state from its `Snapshot` and events and never run
 their own session state machine. No backend, no storage of session
 telemetry. Target layout: spec section 9.
 
+## WASM loading and caching
+
+`scripts/build-wasm.sh` writes `core.wasm` and the toolchain's `wasm_exec.js`
+to `apps/web/public/wasm/` (served as-is by `vite dev`, read by
+`make test-wasm`). For builds, `apps/web/vite/wasmAssets.ts` emits both as
+content-hashed `assets/wasm_exec-<sha256/16>.js` and `assets/core-<sha256/16>.wasm`,
+bakes those URLs into the app JS (`import.meta.env.VITE_*_URL`) and removes the
+unhashed `dist/wasm/`. So each `index.html` -> app JS -> runtime + core chain is
+fixed by content, and everything under `/assets/` is cached immutably; only
+`index.html` and `version.json` revalidate (`apps/web/public/_headers`). An
+old tab keeps its own consistent set; if a deploy removed those files, the core
+load fails with an alert that asks for Retry or a reload. Retry reuses an
+already-loaded `wasm_exec.js` (it is the same hashed file for this page) but
+always re-fetches `core.wasm` into a fresh `Go` instance.
+
 ## Session runner (Phase 3 glue)
 
 `features/session/sessionRunner.ts` wires the bridge to audio, speech and

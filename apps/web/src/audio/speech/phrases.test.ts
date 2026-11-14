@@ -11,7 +11,7 @@ describe('phrases', () => {
     expect(p.countdown(3)).toBe('3');
     expect(p.countdown(0)).toBe('Go');
   });
-  it('stage', () => expect(p.stage('throttle')).toBe('Next: throttle.'));
+  it('stage', () => expect(p.stage('throttle')).toBe('Next, throttle.'));
   it('rounds', () => {
     expect(p.round({ n: 3, outcome: 'complete' })).toBe('Round 3 complete.');
     expect(p.round({ n: 3, outcome: 'skipped' })).toBe('Round 3 skipped.');

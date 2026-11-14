@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { FIREFOX_NO_LOCAL_VOICE, FIREFOX_VOICE_DOM } from './browsers';
 
 // Phase 3 "done when": a MOCK device completes a multi-round session eyes-free; overlap alerts
 // immediately and the session continues; commands work from the keyboard without visible controls.
@@ -34,7 +35,7 @@ async function setup(page: Page, drill: string, rounds: number, followOffset = 0
   await page.getByLabel('Rounds', { exact: true }).fill(String(rounds));
   await page.getByLabel('Rest (s)').fill('1');
   await page.getByLabel('Countdown (s)').fill('1');
-  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Session', exact: true }).getByRole('alert')).toHaveCount(0); // drill accepted
   await page.getByRole('button', { name: 'Enable session audio' }).click();
   await expect(page.getByTestId('session-audio')).toHaveText('running');
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
@@ -43,7 +44,8 @@ async function setup(page: Page, drill: string, rounds: number, followOffset = 0
 const state = (page: Page) => () => page.evaluate(() => window.__tbtTest!.snapshot()?.state);
 const hook = (page: Page) => page.evaluate(() => ({ ...window.__tbtTest!, audio: window.__tbtTest!.audio() }));
 
-test('eyes-free MOCK guided session: keyboard start, overlap alert, session completes', async ({ page }) => {
+test('eyes-free MOCK guided session: keyboard start, overlap alert, session completes', async ({ page, browserName }) => {
+  test.skip(browserName === 'firefox', FIREFOX_VOICE_DOM);
   test.setTimeout(60_000);
   const foreign = trackOrigins(page);
   await setup(page, 'Full trail brake (timed, B+S+T)', 2);
@@ -82,7 +84,8 @@ test('eyes-free MOCK guided session: keyboard start, overlap alert, session comp
   expect(foreign()).toEqual([]);
 });
 
-test('keyboard-only commands: pause, resume, complete (self-paced), skip, stop', async ({ page }) => {
+test('keyboard-only commands: pause, resume, complete (self-paced), skip, stop', async ({ page, browserName }) => {
+  test.skip(browserName === 'firefox', FIREFOX_NO_LOCAL_VOICE);
   test.setTimeout(60_000);
   const foreign = trackOrigins(page);
   // MOCK holds 0.3 above the 40% target, so auto-completion never fires; rounds end by command only.
@@ -111,7 +114,8 @@ test('keyboard-only commands: pause, resume, complete (self-paced), skip, stop',
   expect(foreign()).toEqual([]);
 });
 
-test('source loss mid-round invalidates the attempt (never completedTimed), is audible, and the round is retried', async ({ page }) => {
+test('source loss mid-round invalidates the attempt (never completedTimed), is audible, and the round is retried', async ({ page, browserName }) => {
+  test.skip(browserName === 'firefox', FIREFOX_VOICE_DOM);
   test.setTimeout(60_000);
   const foreign = trackOrigins(page);
   await setup(page, '40% brake hold (timed, B)', 1);

@@ -6,7 +6,14 @@
     <title>Trail Braking Trainer</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- Replaced by the app on start. Stays visible if the app's files failed to load (spec 8: offline static resources). -->
+      <p id="boot">
+        Loading Trail Braking Trainer. If this message stays, the app's files did not load: you may be offline, a
+        blocker may have stopped them, or a new version was just deployed. Check your connection and reload the page.
+      </p>
+      <noscript><p>Trail Braking Trainer needs JavaScript and WebAssembly enabled.</p></noscript>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

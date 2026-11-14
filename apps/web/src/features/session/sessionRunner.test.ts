@@ -14,7 +14,7 @@ const frame = (t: number, v: { brake?: number | null; steering?: number | null; 
 });
 const base: Snapshot = { apiVersion: 1, state: 'IDLE', round: 0, rounds: 0, roundsDone: 0 };
 
-function setup(opts: { commandError?: string; results?: SessionResults } = {}) {
+function setup(opts: { commandError?: string; startError?: string; results?: SessionResults } = {}) {
   let snap = base;
   let now = 1000;
   const subs = new Set<(b: { events: SessionEvent[]; snapshot: Snapshot }) => void>();
@@ -25,7 +25,7 @@ function setup(opts: { commandError?: string; results?: SessionResults } = {}) {
   const bridge: RunnerBridge = {
     pushFrame: (f) => void pushed.push(f),
     command: (c) => (commands.push(c), opts.commandError ? { ...ok(), error: opts.commandError } : ok()),
-    start: (cfg) => (starts.push(cfg), (snap = { ...snap, state: 'PREPARE' }), ok()),
+    start: (cfg) => (starts.push(cfg), opts.startError ? { ...ok(), error: opts.startError } : ((snap = { ...snap, state: 'PREPARE' }), ok())),
     getSnapshot: () => snap,
     subscribe: (fn) => (subs.add(fn as never), () => void subs.delete(fn as never)),
     ...(opts.results ? { results: () => opts.results! } : {}),
@@ -243,6 +243,17 @@ describe('sessionRunner commands', () => {
     u.runner.configure({ name: 'x', config: { controls: ['brake'] }, audioMode: 'dual' });
     expect(u.runner.dispatcher.dispatch('start', 'keyboard')).toEqual({ ok: false, reason: 'sink-error' });
     expect(u.starts).toEqual([]);
+    expect(u.texts()).toEqual(['Cannot start. No live input.']);
+  });
+
+  it('a drill needing a channel the source lacks (GT7 steering) is refused aloud, naming the channel', () => {
+    const s = setup({ startError: 'controls: steering: not available from the current source' });
+    s.runner.configure({ name: 'x', config: { controls: ['brake', 'steering'] }, audioMode: 'dual' });
+    s.runner.pushFrame(frame(1000, { steering: null }));
+    expect(s.runner.dispatcher.dispatch('start', 'voice')).toEqual({ ok: false, reason: 'sink-error' });
+    expect(s.starts[0]!.availableAxes).toEqual(['brake', 'throttle']);
+    expect(s.texts()).toEqual(['Cannot start. Steering not available from this source.']);
+    expect(s.runner.lastError).toMatch(/steering: not available/);
   });
 });
 

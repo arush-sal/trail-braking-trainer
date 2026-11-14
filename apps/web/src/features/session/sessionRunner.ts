@@ -9,6 +9,7 @@ import type { AudioAlert, AudioScene } from '../../audio/sonify/types';
 import type { Announcer } from '../../audio/speech/announcer';
 import * as say from '../../audio/speech/phrases';
 import { createDispatcher, type Command } from '../../controls/dispatcher';
+import { commandFailed } from '../../app/recovery';
 
 /** results is optional: without it spoken feedback falls back to the short outcome cues. */
 export type RunnerBridge = Pick<SessionBridge, 'pushFrame' | 'command' | 'start' | 'getSnapshot' | 'subscribe'> & { results?: () => SessionResults };
@@ -194,7 +195,7 @@ export function createSessionRunner(o: RunnerOptions) {
         throw e;
       }
     },
-    onReject: (cmd) => speak(say.commandRejected(cmd), { category: 'alerts' }),
+    onReject: (cmd, _src, reason) => speak(reason === 'sink-error' ? commandFailed(cmd, lastError) : say.commandRejected(cmd), { category: 'alerts' }),
   });
 
   return {

@@ -5,7 +5,7 @@ Statuses: Not started / Partial / Done. "Mock" means implemented only against th
 
 | ID | Priority | Requirement | Target phase | Status |
 |---|---|---|---|---|
-| R-001 | P0 | Browser-first, no trainer application backend required for direct hardware use | 0-1 | Partial: static Vite app, no backend. Hardware path not started. |
+| R-001 | P0 | Browser-first, no trainer application backend required for direct hardware use | 0-1 | Partial: static bundle, no backend; served with security headers (`apps/web/public/_headers`). Hardware path implemented but unverified. |
 | R-002 | P0 | Go core compiled to WASM; React + TypeScript frontend; browser APIs remain in TypeScript adapters | 0-2 | Partial: Go core WASM loaded in browser via `coreBridge` facade; contract fixtures checked in Go and via built WASM (`make test-wasm`). |
 | R-003 | P0 | Read actual B/S/T controls from browser Gamepad API when available | 1 | Partial (unverified on hardware): Gamepad adapter reads axes + analog buttons, per-control device mapping, diagnostics screen. |
 | R-004 | P0 | GT7 collector supported through its new optional WebSocket endpoint; separate repo | 5 | Partial: prototype client + MOCK collector server; draft protocol v1 (ADR 0005 proposed). Collector unchanged (Phase 5). |
@@ -31,17 +31,41 @@ Statuses: Not started / Partial / Done. "Mock" means implemented only against th
 | R-024 | P0 | Independent accuracy/smoothness/timing/consistency metrics; no combined total | 4 | Partial: separate accuracy, smoothness, timing and consistency metrics in `core/metrics` with documented formulas (`docs/metric-definitions.md`) and fixture tests (`core/metrics/testdata/fixtures_v1.json`); no combined total anywhere. Thresholds/filters PROPOSED, not validated on hardware data. |
 | R-025 | P0 | Preserve per-round input telemetry and plot desired vs actual for each selected input after drills | 4 | Done (mock-verified): per-round traces kept in memory (full resolution in Go; UI gets downsampled display traces by default) and plotted desired vs actual per selected channel with gaps for invalid data, zoom, overlays and a table view. Discarded on reset/reload. |
 | R-026 | P0 | Optional spoken performance feedback and post-session improvement suggestions only; no automatic difficulty changes | 4 | Partial: optional spoken round/session summaries from the core metrics (Spoken feedback toggle + announcer categories), concise for eyes-free use; recommendations are suggestions only and apply to the next session only after explicit confirm. Real browser speech unverified. |
-| R-027 | P0 | Current-session data only, no retained historical results | 0-4 | Partial: no storage/backend exists; mock frames live in memory only. |
+| R-027 | P0 | Current-session data only, no retained historical results | 0-4 | Partial (mock-verified): no storage/backend; Phase 6 review found no localStorage/sessionStorage/IndexedDB/service worker/cookies/beacons in source or production bundle, and CSP blocks third-party connections (`docs/security.md`). Results discarded on reload/reset. |
 | R-028 | P0 | Calibration is optional; ability to set mapping, inversion, min/max, neutral, deadzone | 1 | Partial (unverified on hardware): optional mapping, inversion, range capture, center, deadzone. |
-| R-029 | P0 | Source/connection loss and permission failures are audible and do not yield false success scores | 1-3 | Partial: device loss -> n/a; WS stale; session SOURCE_LOST invalidates attempt (retry cap 3); `sessionRunner` reports silence > 250 ms, stale frames or unavailable required channels as `sourceLost` (once) with an audible alert + critical speech, and `sourceRestored` on recovery. Unit-tested with fakes; e2e: MOCK stopped mid-round -> `invalidSourceLost` + one audible alert, round retried and completed. Not exercised on hardware. |
+| R-029 | P0 | Source/connection loss and permission failures are audible and do not yield false success scores | 1-3 | Partial (mock-verified): device loss -> n/a; WS stale; session SOURCE_LOST invalidates attempt (retry cap 3) with audible alert + critical speech and `sourceRestored` on recovery (e2e: MOCK stopped mid-round). Phase 6 adds spoken permission/failure cues: microphone denied / voice error / speech service unreachable, session audio suspended/interrupted (spoken via speech synthesis), and start refused with the reason (missing channel e.g. GT7 steering, no live input). Every spec 8 failure has a visible recovery path (`docs/security.md` table; unit tests + e2e `recovery.spec.ts`: WASM load failure + Retry, failed app script, no gamepad). Not exercised on hardware or with real permission prompts. |
 | R-030 | P0 | Go Modules + npm workspace dependency management; deterministic builds | 0 | Done (baseline): `core/go.mod`, npm workspaces + lockfile, `make setup` uses `npm ci` + `go mod verify`. |
-| R-031 | P0 | GitHub Actions tests, static analysis, security scanning, SBOM, signing, provenance | 0-6 | Partial: CI runs make lint/test/build/test-wasm/test-e2e; security scans; CodeQL enabled (public repo). SBOM/signing/provenance = Phase 6. |
-| R-032 | P0 | Version tags from `main` create GitHub Releases; Cloudflare Pages deploys the exact release bundle | 6 | Not started |
+| R-031 | P0 | GitHub Actions tests, static analysis, security scanning, SBOM, signing, provenance | 0-6 | Partial: CI runs make lint/test/build/test-wasm/test-e2e; security scans; CodeQL enabled (public repo). Phase 6: `release.yml` adds Syft SPDX SBOMs, Cosign keyless bundles, GitHub provenance/SBOM attestations, in-job verification (not yet run on a real tag). |
+| R-032 | P0 | Version tags from `main` create GitHub Releases; Cloudflare Pages deploys the exact release bundle | 6 | Partial: tag -> gates -> build once -> GitHub Release -> deploy job verifies Release assets; `scripts/deploy.sh` deploys the verified bundle to Cloudflare Workers Static Assets via `cf` (ADR 0008; replaces Pages wording); rollback workflow. Not yet exercised by a real tag. See `docs/release-process.md`. |
 | R-033 | P1 | Record-and-repeat custom target (advanced, later) | future | Not started |
 | R-034 | P1 | Live visible target trace (optional advanced enhancement; post-session trace is P0) | future | Not started |
 | R-035 | P2 | Native desktop application using reusable core | future | Not started |
 | R-036 | P2 | GT7-specific mobile application using reusable core and collector connection | future | Not started |
-| R-037 | P0 | Hardware and browser compatibility tested rather than assumed | 1-6 | Partial: manual protocol `docs/hardware-test-protocol.md`; no hardware evidence recorded yet. |
+| R-037 | P0 | Hardware and browser compatibility tested rather than assumed | 1-6 | Partial: manual protocol `docs/hardware-test-protocol.md`; automated e2e matrix (Chromium; Firefox/WebKit in CI) covers MOCK paths only. CSP verified in headless Chromium + Firefox (`tests/e2e/csp.spec.ts`). **No hardware or real-browser manual evidence recorded yet**: every wheel/pedal/browser/GT7 claim stays unverified until the final manual run. |
+
+## Spec 13 agent completion checklist (status 2026-11-14)
+
+"Mock" = automated against the MOCK source only. No item is verified on hardware or by a listening test.
+
+| Checklist item | Status | Evidence / gap |
+|---|---|---|
+| Freeform and guided practice work; audio alone is sufficient for baseline sessions | Partial (mock) | e2e `eyes-free.spec.ts`, `drills.spec.ts`; no listening test |
+| All permitted B/S/T selections work; B+T only is disallowed | Done (core + UI) | `drills.ValidateSelection`, freeform selector |
+| All generated desired curves satisfy zero brake/throttle overlap | Done (core) | property + fuzz tests |
+| Actual overlap causes immediate audio warning and does not restart a drill | Partial (mock) | e2e overlap episode; sound unverified by listening |
+| Primary audio follows B->S->T control handoffs | Partial | core + unit tests; perceptual priority unverified |
+| Continuous audio conveys position and movement; optional explicit fluctuation warnings | Partial | implemented; constants PROPOSED, no listening test |
+| Guided dual-tone and deviation-based audio available | Partial | implemented; no listening test |
+| Hold, full-range sweep, progressive curves and multi-stage drills | Done (mock) | e2e `drills.spec.ts` |
+| Timed/self-paced modes; automatic and manual self-paced completion | Done (mock) | e2e + core tests |
+| Eight rounds default; configurable rest/countdown; automatic progression | Done (core + mock e2e) | |
+| Voice + configurable button commands; safe fallbacks and permission warnings | Partial | keyboard verified in e2e; voice/gamepad buttons unverified; permission failures shown + spoken (Phase 6) |
+| Independent metrics and session-only graphs; no overall score or saved history | Done (mock) | metrics fixtures; storage review in `docs/security.md` |
+| Calibrate on request, not mandatory; missing input channels are marked unavailable | Partial | implemented; unverified on hardware |
+| Collector WS is optional, secure, versioned, and backward compatible | Not done | trainer client only; collector endpoint = separate repo (Phase 5) |
+| CI checks both Go Modules and npm; scans, signed SBOMs, provenance and protected tag release | Partial | see R-031/R-032; not yet run on a real tag |
+| Cloudflare deploy uses exactly the GitHub Release's tested static artifact | Partial | see R-032; not yet exercised |
+| No claims about Fanatec, Logitech, browsers, or GT7 steering without live evidence | Holding | README/UI state everything unverified; GT7 steering unavailable |
 
 ## What is mocked vs unimplemented (Phase 3)
 

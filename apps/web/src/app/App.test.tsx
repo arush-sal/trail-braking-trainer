@@ -58,11 +58,16 @@ describe('App', () => {
   it('renders session setup (waiting for the core), controls, audio setup, and the MOCK follow options', () => {
     render(<App />);
     expect(screen.getByRole('heading', { name: 'Session' })).toBeTruthy();
-    expect(screen.getByText(/Session needs the core/)).toBeTruthy();
+    expect(screen.getByText(/Sessions need the training core/)).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Controls' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Sonification check' })).toBeTruthy();
     expect(screen.getByLabelText(/MOCK: follow the drill target/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'MOCK: inject overlap' })).toBeTruthy();
     expect((window as unknown as { __tbtTest?: unknown }).__tbtTest).toBeUndefined(); // e2e build mode only
+  });
+
+  it('shows the version and the short commit SHA in the footer', () => {
+    render(<App />);
+    expect(screen.getByTestId('app-version').textContent).toMatch(/^Version \S+ \(([0-9a-f]{7}|unknown)\)$/);
   });
 });

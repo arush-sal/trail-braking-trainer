@@ -14,6 +14,22 @@ const fake = {
 };
 
 describe('DevicesPanel', () => {
+  it('no Gamepad API: explains it and offers the other sources', () => {
+    render(<DevicesPanel />); // jsdom has no navigator.getGamepads
+    const a = screen.getByRole('alert');
+    expect(a.textContent).toMatch(/does not provide the Gamepad API/);
+    expect(a.textContent).toMatch(/HTTPS or localhost/);
+    expect(a.textContent).toMatch(/MOCK or GT7 collector/);
+  });
+
+  it('API present but no devices: says how to make the device appear', () => {
+    render(<DevicesPanel getGamepads={() => []} />);
+    expect(screen.queryByRole('alert')).toBeNull();
+    const p = screen.getByText(/No gamepads detected/);
+    expect(p.textContent).toMatch(/press a pedal or button/i);
+    expect(p.textContent).toMatch(/reconnect/i);
+  });
+
   it('renders devices, raw values, n/a for unmapped channels and capabilities', () => {
     vi.useFakeTimers();
     render(<DevicesPanel getGamepads={() => [fake]} />);

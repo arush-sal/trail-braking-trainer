@@ -9,7 +9,7 @@ export const exercise = (e: { name: string; rounds?: number; restSec?: number })
   [`${e.name}.`, e.rounds !== undefined && `${plural(e.rounds, 'round')}.`, e.restSec !== undefined && `${plural(e.restSec, 'second')} rest.`]
     .filter(Boolean).join(' ');
 export const countdown = (n: number) => (n <= 0 ? 'Go' : String(n));
-export const stage = (label: string) => `Next: ${label}.`;
+export const stage = (label: string) => `Next, ${label}.`;
 export const round = (r: { n: number; outcome: 'complete' | 'skipped' | 'invalid'; reason?: string }) =>
   r.outcome === 'invalid' ? `Round ${r.n} invalid.${r.reason ? ` ${cap(r.reason)}.` : ''}` : `Round ${r.n} ${r.outcome}.`;
 export const roundSummary = (n: number, metrics: { name: string; text: string }[]) =>
@@ -32,3 +32,4 @@ const MIC: Record<MicState, string> = {
 export const micState = (s: MicState) => MIC[s];
 export const commandRejected = (c: Command) => `Cannot ${c} now.`;
 export const confirmStop = () => 'Say stop again to confirm.';
+export const audioSuspended = () => 'Audio paused. Press enable audio.';

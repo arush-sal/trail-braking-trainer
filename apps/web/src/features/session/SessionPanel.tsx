@@ -9,6 +9,7 @@ import { LEGAL, SHORT, buildDrill, fromDrill, type FormState } from '../drills/f
 import { DrillEditor, NumField, parseCoreError } from '../drills/DrillEditor';
 import { SetupPreview, type PreviewSamples } from '../drills/SetupPreview';
 import { useDrillValidation } from '../drills/useDrillValidation';
+import { startHelp } from '../../app/recovery';
 
 // Freeform offers only the legal contiguous selections (spec 3.2); B+T is deliberately absent.
 const SELECTIONS: Axis[][] = LEGAL;
@@ -149,7 +150,7 @@ export function SessionPanel({ runner, bridge, previewSamples }: SessionPanelPro
           <button key={c} type="button" disabled={c === 'start' && blocked} onClick={() => runner.dispatcher.dispatch(c, 'ui')}>{label}</button>
         ))}
       </p>
-      {err && <p role="status">Last command failed: {err}</p>}
+      {err && <p role="status">Last command failed: {startHelp(err)}</p>}
       <div aria-live="off">
         <p className="big" data-testid="session-state">{snap.state}</p>
         <p data-testid="session-status">

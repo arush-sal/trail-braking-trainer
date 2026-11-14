@@ -86,6 +86,12 @@ export function DevicesPanel({ onFrame, getGamepads, onPads }: DevicesPanelProps
       <h2 id="devices-h">Input devices (diagnostics)</h2>
       <p role="note">Hardware behavior here is unverified until recorded in docs/validation-log.md.</p>
 
+      {!getGamepads && !caps.gamepadApi && (
+        <p role="alert">
+          This browser does not provide the Gamepad API here, so wheels and pedals cannot be read. Use a current Chrome, Edge,
+          Firefox or Safari on a page served over HTTPS or localhost, or train with the MOCK or GT7 collector source.
+        </p>
+      )}
       {view.stats.error && (
         <p role="alert">
           Cannot read gamepads ({view.stats.error}). Check that the page is allowed to use gamepads (secure context, browser
@@ -94,7 +100,13 @@ export function DevicesPanel({ onFrame, getGamepads, onPads }: DevicesPanelProps
       )}
 
       <h3>Devices</h3>
-      {view.devices.length === 0 && <p>No gamepads detected. Press a button or move a control on the device.</p>}
+      {view.devices.length === 0 && (
+        <p>
+          No gamepads detected. Connect the wheel or pedals, then press a pedal or button: browsers hide controllers until the
+          first input on this page. Still missing? Reconnect the USB cable, close apps that hold the device exclusively, and
+          check that the operating system sees it.
+        </p>
+      )}
       {view.devices.map((d) => (
         <article key={d.key} aria-label={d.key}>
           <h4>

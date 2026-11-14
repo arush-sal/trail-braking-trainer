@@ -1,0 +1,291 @@
+name: Release
+
+# Protected tag vX.Y.Z on a tested master commit -> uncached gates -> build once
+# -> SBOM, checksums, Cosign, attestations -> GitHub Release -> deploy those bytes.
+# See docs/release-process.md (R-031, R-032).
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TRIVY_SKIP_VERSION_CHECK: "true"
+
+jobs:
+  verify-tag:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check semver, master ancestry and app version
+        id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          [[ $TAG =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
+            || { echo "::error::tag $TAG is not vMAJOR.MINOR.PATCH"; exit 1; }
+          version="${TAG#v}"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/master \
+            || { echo "::error::$TAG ($GITHUB_SHA) is not on master"; exit 1; }
+          app="$(jq -r .version apps/web/package.json)"
+          [[ $app == "$version" ]] \
+            || { echo "::error::apps/web/package.json version $app != $version"; exit 1; }
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+  gates:
+    name: Release gates (uncached)
+    needs: verify-tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: core/go.mod
+          cache: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+          install-mode: binary
+          install-only: true
+          skip-cache: true
+
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.76.2
+          cache: false
+
+      - name: Install govulncheck, osv-scanner, zizmor
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.7.1
+          pipx install zizmor==1.32.0
+
+      # Before `make setup` so Trivy scans the checkout, not node_modules.
+      - name: Security
+        run: make security
+
+      - name: Setup
+        run: make setup
+
+      - name: Lint
+        run: make lint
+
+      - name: Test
+        run: make test
+
+      - name: WASM contract tests
+        run: make test-wasm
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      # Additional gate: the full hook-based suite runs on an e2e-mode build of the
+      # same commit. The released bytes are gated separately in the build job.
+      - name: E2E tests (e2e-mode build, test hooks)
+        run: make test-e2e
+
+  build:
+    name: Build, gate, scan, sign, attest
+    needs: [verify-tag, gates]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write # Cosign keyless + attestation signing (OIDC)
+      attestations: write # actions/attest-* store attestations
+    env:
+      VERSION: ${{ needs.verify-tag.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: core/go.mod
+          cache: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      - name: Install Syft
+        run: go install -ldflags "-X main.version=1.57.1" github.com/anchore/syft/cmd/syft@v1.57.1
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.4
+
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.76.2
+          cache: false
+
+      - name: Setup
+        run: make setup
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      # apps/web/dist is built here once; every later step uses these bytes.
+      - name: Build production bundle (once)
+        run: make build
+
+      - name: Browser gates on the production bundle (smoke, CSP, version, recovery)
+        run: make test-dist
+
+      - name: Package, SBOMs, checksums
+        run: make package verify-dist
+
+      - name: Scan packaged bundle and SBOM (Trivy, blocking)
+        run: make scan-dist
+
+      - name: Sign with Cosign (keyless)
+        working-directory: dist-release
+        run: |
+          for f in "trail-braking-trainer_${VERSION}_web.tar.gz" \
+                   "trail-braking-trainer_${VERSION}_web.spdx.json" \
+                   "trail-braking-trainer_${VERSION}_source.spdx.json" \
+                   checksums.txt; do
+            cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
+          done
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: dist-release/checksums.txt
+
+      - name: Attest SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: dist-release/trail-braking-trainer_${{ needs.verify-tag.outputs.version }}_web.tar.gz
+          sbom-path: dist-release/trail-braking-trainer_${{ needs.verify-tag.outputs.version }}_web.spdx.json
+
+      - name: Verify signatures and attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/verify-release.sh "$VERSION" dist-release
+
+      - name: Upload release files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: dist-release/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: [verify-tag, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # gh release create
+    steps:
+      - name: Download release files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: dist-release
+
+      - name: Create release
+        working-directory: dist-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          sha256sum --strict -c checksums.txt
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$TAG" --notes "Verify before use: see README.md#verifying-a-release" \
+            ./*
+
+  deploy:
+    name: Deploy release to production
+    needs: [verify-tag, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      attestations: read # gh attestation verify
+    env:
+      VERSION: ${{ needs.verify-tag.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.4
+
+      # Deploy the published release assets, never a rebuild.
+      - name: Download and verify release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/assets"
+          scripts/verify-release.sh "$VERSION" "$RUNNER_TEMP/assets"
+          mkdir "$RUNNER_TEMP/site"
+          tar -xzf "$RUNNER_TEMP/assets/trail-braking-trainer_${VERSION}_web.tar.gz" -C "$RUNNER_TEMP/site" --no-same-owner
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false # no caches in release/deploy jobs (cache poisoning)
+
+      - name: Install pinned cf CLI (lockfile)
+        run: npm ci --ignore-scripts
+
+      # Workers Static Assets via the cf CLI (ADR 0008).
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: scripts/deploy.sh "$RUNNER_TEMP/site/trail-braking-trainer_${VERSION}_web"
