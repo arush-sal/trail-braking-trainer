@@ -1,11 +1,66 @@
-# Trail Braking Trainer
+<div align="center">
 
-Browser-based muscle-memory trainer for precise, smooth, repeatable brake,
-steering, and throttle input. It is not a racing-line advisor, lap-time
-optimizer, or race engineer. Spec: `trail-braking-trainer-implementation-plan.md`.
+<h1>Trail Braking Trainer</h1>
+<p>Browser-based muscle-memory trainer for precise, smooth, repeatable brake, steering and throttle input.</p>
 
-## Status: pre-release (Phase 6 hardening). Verified only against MOCK input
+[![Live](https://img.shields.io/badge/Live-trail--braking--trainer.aru.sh-brightgreen)](https://trail-braking-trainer.aru.sh)
+[![Tests](https://github.com/arush-sal/trail-braking-trainer/actions/workflows/test.yml/badge.svg)](https://github.com/arush-sal/trail-braking-trainer/actions/workflows/test.yml)
+[![Security](https://github.com/arush-sal/trail-braking-trainer/actions/workflows/security.yml/badge.svg)](https://github.com/arush-sal/trail-braking-trainer/actions/workflows/security.yml)
+[![CodeQL](https://github.com/arush-sal/trail-braking-trainer/actions/workflows/codeql.yml/badge.svg)](https://github.com/arush-sal/trail-braking-trainer/actions/workflows/codeql.yml)
+[![Release](https://github.com/arush-sal/trail-braking-trainer/actions/workflows/release.yml/badge.svg)](https://github.com/arush-sal/trail-braking-trainer/actions/workflows/release.yml)
+[![Go 1.27](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)](core/go.mod)
+[![Node 26](https://img.shields.io/badge/Node-26-339933?logo=nodedotjs&logoColor=white)](.node-version)
+[![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-blue)](LICENSE)
 
+<a href="https://trail-braking-trainer.aru.sh">Live site</a> &middot;
+<a href="#try-it">Try it</a> &middot;
+<a href="#how-it-works">How it works</a> &middot;
+<a href="#status">Status</a> &middot;
+<a href="#supported-and-unsupported-paths">Supported paths</a> &middot;
+<a href="#developer-quickstart">Developer quickstart</a> &middot;
+<a href="#using-the-app">Using the app</a> &middot;
+<a href="#known-limitations">Known limitations</a> &middot;
+<a href="#verifying-a-release">Verify a release</a> &middot;
+<a href="#faq">FAQ</a> &middot;
+<a href="#license">License</a>
+
+</div>
+
+A browser-based trainer for brake, steering and throttle control. It gives
+eyes-free audio and speech feedback while you drill holds, sweeps and
+progressions, then shows accuracy, smoothness, timing and consistency
+results. It is not a racing-line advisor, lap-time optimizer, or race
+engineer. Spec: `trail-braking-trainer-implementation-plan.md`.
+
+## Try it
+
+Open <https://trail-braking-trainer.aru.sh> and choose the MOCK input source
+to try the drills without any hardware. Use desktop Chrome or Edge for
+gamepad and speech features. Releases:
+<https://github.com/arush-sal/trail-braking-trainer/releases>.
+
+## How it works
+
+```mermaid
+flowchart LR
+  subgraph SRC[Input sources]
+    M[MOCK]
+    G[Gamepad API wheel and pedals]
+    C[GT7 collector WebSocket<br/>client only, endpoint not built yet]
+  end
+  SRC --> F[InputFrame<br/>normalized, null when unavailable]
+  F --> B[sessionBridge<br/>60 Hz batching]
+  B --> W[Go core in WASM<br/>drills, session state machine,<br/>overlap / fluctuation / completion detectors, metrics]
+  W --> S[snapshots and events]
+  S --> A[Web Audio sonification<br/>and speech announcer, eyes-free]
+  S --> R[Results view<br/>graphs and metrics]
+  K[Keyboard / gamepad buttons / voice / UI] --> D[command dispatcher] --> W
+```
+
+## Status
+
+**Released and live ([latest release](https://github.com/arush-sal/trail-braking-trainer/releases/latest)), but still verified
+only against MOCK input (hardware tests pending).**
 Nothing here is verified on real wheels, pedals or GT7, or by a person listening in a real
 browser, until the final manual run is recorded in `docs/validation-log.md`.
 
@@ -20,7 +75,7 @@ browser, until the final manual run is recorded in `docs/validation-log.md`.
 | Metrics, graphs | Separate accuracy / smoothness / timing / consistency metrics (no combined score; formulas in `docs/metric-definitions.md`), desired-vs-actual graphs per channel, suggestions applied only on confirm. Thresholds are PROPOSED. Results stay in memory only. |
 | GT7 collector WebSocket | Trainer client tested only against a MOCK server (`tests/mock-collector/`). The collector endpoint is pending separate-repository work. **GT7 steering is unavailable.** |
 | Security, privacy, errors | CSP and security headers (`apps/web/public/_headers`), threat model and privacy review (`docs/security.md`), and a recovery path for every spec 8 failure. The production site loads Cloudflare Web Analytics (cookieless page-load metrics, no session data; ADR 0009). |
-| Release, SBOM, signing, deploy | Tag-driven release workflow: reproducible tarball, Syft SBOMs, Cosign + GitHub attestations, GitHub Release (`docs/release-process.md`). Deploy: Cloudflare Workers Static Assets via the `cf` CLI at `trail-braking-trainer.aru.sh` (ADR 0008). Not yet exercised by a real tag. |
+| Release, SBOM, signing, deploy | Tag-driven release workflow: reproducible tarball, Syft SBOMs, Cosign + GitHub attestations, GitHub Release (`docs/release-process.md`). Deploy: Cloudflare Workers Static Assets via the `cf` CLI at `trail-braking-trainer.aru.sh` (ADR 0008). Every release since v0.1.0 is deployed through this pipeline. |
 
 Per-requirement status: `docs/requirements.md`. Hardware evidence:
 `docs/validation-log.md`.
@@ -101,6 +156,26 @@ happened and what to do. The full list is in `docs/security.md`, "Error recovery
 - Slow-input warning threshold (20 Hz) and source-loss timeout (250 ms) are PROPOSED.
 - Headless Firefox on the dev host ran MOCK input slowly (~18 Hz). Real Firefox is unmeasured.
 
+## FAQ
+
+**Do I need a wheel or GT7?** No. The MOCK source runs every drill with
+synthetic input.
+
+**Does it store my data?** No. Results stay in memory only and are gone on
+reload. The production site loads Cloudflare Web Analytics (cookieless
+page-load metrics, no session data; ADR 0009).
+
+**Why is there no GT7 steering?** The evidence is inconclusive
+(`docs/research/gt7-steering-evidence.md`). The trainer never substitutes
+wheel angle or yaw for it.
+
+**Which browsers work?** Chromium is the baseline, and Firefox and WebKit run
+in the CI matrix. Voice commands need the browser's SpeechRecognition, so they
+are not available in Firefox.
+
+**Is it a racing-line or lap-time tool?** No. It trains input precision and
+smoothness only.
+
 ## Verifying a release
 
 Download every asset of Release `vX.Y.Z` into one directory, then (needs
@@ -136,4 +211,10 @@ sha256 of every bundle file. Details: `docs/release-process.md`.
 
 ## License
 
-Business Source License 1.1. See `LICENSE`.
+Business Source License 1.1. See [`LICENSE`](LICENSE).
+
+| Parameter | Value |
+|---|---|
+| Change Date | 2030-01-01 |
+| Change License | GNU GPLv3 |
+| Additional Use Grant | None |
