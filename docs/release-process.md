@@ -139,3 +139,14 @@ bypass), environment `production` (owner as required reviewer; branch
 `master` and tags `v*`) with the two Cloudflare secrets, default workflow
 token read-only, secret scanning + push protection, private vulnerability
 reporting.
+
+Actions policy (2026-11-14, owner request): "Allow arush-sal, and select
+non-arush-sal, actions and reusable workflows" (`allowed_actions=selected`,
+GitHub-owned allowed, verified creators not auto-allowed). Third-party
+allowlist: `aquasecurity/setup-trivy@*`, `aquasecurity/trivy-action@*`,
+`golangci/golangci-lint-action@*`, `sigstore/cosign-installer@*`,
+`zizmorcore/zizmor-action@*`. Nested composite uses are GitHub-owned
+(`actions/cache`, `actions/checkout`, `actions/attest`,
+`github/codeql-action/upload-sarif`) or listed. A new third-party action
+fails at startup until added via
+`gh api -X PUT repos/arush-sal/trail-braking-trainer/actions/permissions/selected-actions`.
