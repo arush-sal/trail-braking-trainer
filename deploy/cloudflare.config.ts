@@ -9,5 +9,7 @@ export default defineConfig({
     assets: { notFoundHandling: "single-page-application" },
     domains: ["trail-braking-trainer.aru.sh"],
     workersDev: true,
+    // Version preview URLs for release review; gated by Cloudflare Access (ADR 0010).
+    previewUrls: true,
   },
 });
