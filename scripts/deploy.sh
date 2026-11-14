@@ -32,10 +32,17 @@ bundle() { # dir -> absolute dir; exits unless it is a release bundle
     { echo "deploy.sh: $d is not a release bundle (index.html, assets/core-*.wasm, build-manifest.json)" >&2; exit 2; }
   (cd "$d" && pwd)
 }
+# Access apps JSON, preview domain, Worker tag -> exit 0 if an app protects the preview URLs:
+# either a self-hosted app on the wildcard domain, or the dashboard's "preview_worker" destination.
+access_covers() {
+  jq -e --arg d "$2" --arg t "$3" 'any(.[]; .domain == $d or any(.self_hosted_domains[]?; . == $d)
+    or any(.destinations[]?; .type == "preview_worker" and .worker_id == $t))' <<<"$1" >/dev/null
+}
 manifest_version() { node -p 'require(process.argv[1]).version' "$1/build-manifest.json"; }
 
 mode=deploy
 case ${1:-} in
+  --access-check) access_covers "$2" "$3" "$4"; exit ;; # test hook for the predicate
   --preview) mode=preview; shift ;;
   --promote) mode=promote; shift ;;
 esac
@@ -68,7 +75,8 @@ alias="v${version//./-}"
 if ((${#dry[@]} == 0)); then
   sub="$(cfapi workers/subdomain | jq -r .subdomain)"
   domain="*-$worker.$sub.workers.dev"
-  cfapi "access/apps" | jq -e --arg d "$domain" 'any(.[]; .domain == $d or any(.self_hosted_domains[]?; . == $d))' >/dev/null ||
+  tag="$(cfapi workers/scripts | jq -r --arg w "$worker" '.[] | select(.id == $w) | .tag')"
+  access_covers "$(cfapi access/apps)" "$domain" "$tag" ||
     { echo "deploy.sh: no Cloudflare Access application protects $domain; refusing to publish a preview" >&2; exit 1; }
 fi
 out="$(npx --no-install cf workers versions create "$site" "${dry[@]}" --tag "v$version" \

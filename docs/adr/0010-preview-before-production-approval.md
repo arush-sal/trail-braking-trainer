@@ -20,7 +20,8 @@ approval step, gated behind Cloudflare Zero Trust.
   100% of traffic to exactly the version that was reviewed.
 - Preview URLs (`*-trail-braking-trainer.<subdomain>.workers.dev`) are protected by a
   Cloudflare Access self-hosted application allowing `tbt-admin@aru.sh`.
-  `deploy.sh --preview` fails closed if no Access application covers that domain.
+  `deploy.sh --preview` fails closed unless an Access application covers that domain or is
+  the dashboard-created one (destination `preview_worker` for this Worker).
 - `deploy/cloudflare.config.ts` sets `previewUrls: true` explicitly.
 - Rollback still redeploys an earlier Release in one step (`scripts/deploy.sh`).
 
