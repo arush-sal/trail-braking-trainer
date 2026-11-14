@@ -1,7 +1,8 @@
 name: Release
 
 # Protected tag vX.Y.Z on a tested master commit -> uncached gates -> build once
-# -> SBOM, checksums, Cosign, attestations -> GitHub Release -> deploy those bytes.
+# -> SBOM, checksums, Cosign, attestations -> GitHub Release -> Access-protected preview
+# version of those bytes -> approval -> promote that exact version to production.
 # See docs/release-process.md (R-031, R-032).
 on:
   push:
@@ -238,18 +239,25 @@ jobs:
             --title "$TAG" --notes "Verify before use: see README.md#verifying-a-release" \
             ./*
 
-  deploy:
-    name: Deploy release to production
+  # Uploads the verified Release assets as a Worker version that serves no production traffic,
+  # behind Cloudflare Access (ADR 0010). Its preview URL is what the production approver reviews.
+  preview:
+    name: Upload preview (no production traffic)
     needs: [verify-tag, release]
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: production
+    environment:
+      name: preview
+      url: ${{ steps.upload.outputs.alias_url || steps.upload.outputs.preview_url }}
     concurrency:
       group: production
       cancel-in-progress: false
     permissions:
       contents: read
       attestations: read # gh attestation verify
+    outputs:
+      version_id: ${{ steps.upload.outputs.version_id }}
+      preview_url: ${{ steps.upload.outputs.preview_url }}
     env:
       VERSION: ${{ needs.verify-tag.outputs.version }}
     steps:
@@ -263,7 +271,7 @@ jobs:
         with:
           cosign-release: v3.1.4
 
-      # Deploy the published release assets, never a rebuild.
+      # Preview the published release assets, never a rebuild.
       - name: Download and verify release assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -283,9 +291,63 @@ jobs:
       - name: Install pinned cf CLI (lockfile)
         run: npm ci --ignore-scripts
 
-      # Workers Static Assets via the cf CLI (ADR 0008).
-      - name: Deploy
+      - name: Upload version (preview URL, Access-protected)
+        id: upload
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: scripts/deploy.sh "$RUNNER_TEMP/site/trail-braking-trainer_${VERSION}_web"
+        run: scripts/deploy.sh --preview "$RUNNER_TEMP/site/trail-braking-trainer_${VERSION}_web"
+
+      - name: Review link
+        env:
+          PREVIEW: ${{ steps.upload.outputs.preview_url }}
+          ALIAS: ${{ steps.upload.outputs.alias_url }}
+          VERSION_ID: ${{ steps.upload.outputs.version_id }}
+        run: |
+          {
+            echo "### Review v$VERSION before approving production"
+            echo
+            echo "- Preview: $PREVIEW"
+            [[ -z $ALIAS ]] || echo "- Alias: $ALIAS"
+            echo "- Worker version: \`$VERSION_ID\` (approving routes 100% of production traffic to exactly this version)"
+            echo "- Sign-in: Cloudflare Access (Zero Trust)"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  # Promotes the reviewed version: no new upload, the bytes served are the ones previewed.
+  deploy:
+    name: Deploy release to production
+    needs: [verify-tag, preview]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+      url: https://trail-braking-trainer.aru.sh
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.verify-tag.outputs.version }}
+      VERSION_ID: ${{ needs.preview.outputs.version_id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false # no caches in release/deploy jobs (cache poisoning)
+
+      - name: Install pinned cf CLI (lockfile)
+        run: npm ci --ignore-scripts
+
+      # Workers Static Assets via the cf CLI (ADR 0008, ADR 0010).
+      - name: Promote reviewed version
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: scripts/deploy.sh --promote "$VERSION_ID" "$VERSION"

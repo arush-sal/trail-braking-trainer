@@ -14,7 +14,8 @@ attested, published as a GitHub Release, and those exact bytes are deployed.
 | `gates` | No caches (setup-go/setup-node/golangci-lint caching off, Trivy DB fetched fresh): `make security setup lint test test-wasm test-e2e`. `test-e2e` is an **additional** gate: the full hook-based Playwright suite runs on an e2e-mode build (`dist-e2e`, test hooks) of the same commit, so it tests a different build from the one released. | `contents: read` |
 | `build` | With `VERSION=X.Y.Z` (= `VITE_APP_VERSION`): `make build` **once** into `apps/web/dist`; `make test-dist` runs the hook-free Playwright gates (smoke, CSP, version, recovery; tests tagged `@hooks` excluded) against **that** directory (`E2E_DIST=dist` webServer, no rebuild, rejects `__tbtTest`); `make package verify-dist` packs that same directory; `make scan-dist` runs blocking Trivy (vuln+secret, HIGH/CRITICAL) on the extracted tarball and `trivy sbom` on the web SBOM. Only then Cosign keyless `sign-blob --bundle` for tarball, both SBOMs and `checksums.txt`, `actions/attest-build-provenance` over `checksums.txt` subjects, `actions/attest-sbom` (web SBOM on the tarball), then `scripts/verify-release.sh` against the workflow identity. Uploads `dist-release/`. | `contents: read`, `id-token: write`, `attestations: write` |
 | `release` | Re-checks `checksums.txt`, `gh release create vX.Y.Z` with all files. | `contents: write` |
-| `deploy` | Environment `production`. Downloads the **Release assets** (not the build artifact, not a rebuild), runs `scripts/verify-release.sh`, extracts, calls `scripts/deploy.sh <bundle dir>`. | `contents: read`, `attestations: read` |
+| `preview` | Environment `preview` (tags `v*`, no reviewer). Downloads the **Release assets** (not the build artifact, not a rebuild), runs `scripts/verify-release.sh`, extracts, `scripts/deploy.sh --preview` uploads them as a Worker version with **no production traffic** behind Cloudflare Access (ADR 0010). The preview URL is the environment URL and is in the run summary. | `contents: read`, `attestations: read` |
+| `deploy` | Environment `production` (required reviewer: review the preview first). `scripts/deploy.sh --promote <version id> X.Y.Z` checks the version tag and routes 100% of traffic to exactly the previewed version. No upload. | `contents: read` |
 
 `scripts/deploy.sh [--dry-run] <bundle dir>` deploys the verified bundle to
 Cloudflare **Workers Static Assets** with the lockfile-pinned `cf` CLI
@@ -57,6 +58,7 @@ osv-scanner v2.7.1, zizmor 1.32.0, golangci-lint v2.15.0.
 # on master, after CI is green: bump apps/web/package.json "version" to X.Y.Z via PR, merge
 git tag -s vX.Y.Z -m vX.Y.Z <master commit>
 git push origin vX.Y.Z
+# open the preview URL from the run summary (Cloudflare Access sign-in), then
 # approve the production environment deployment when the deploy job waits
 ```
 
@@ -80,8 +82,8 @@ verify`) are supported; no plan upgrade is needed.
 3. **Environment** `production`: required reviewer (owner; leave "prevent
    self-review" off while there is a single maintainer); deployment branches
    and tags limited to tags `v*` and branch `master` (for `rollback.yml`).
-4. **Environment secrets** on `production` only (never repository-wide, never
-   to fork PR jobs): `CLOUDFLARE_API_TOKEN` (minimum: Account > Workers Scripts: Edit; Zone aru.sh > Workers Routes: Edit + DNS: Edit for the custom domain),
+4. **Environment secrets** on `preview` and `production` only (never repository-wide, never
+   to fork PR jobs): `CLOUDFLARE_API_TOKEN` (minimum: Account > Workers Scripts: Edit; Zone aru.sh > Workers Routes: Edit + DNS: Edit for the custom domain; Account > Access: Apps and Policies: Read for the fail-closed preview check),
    `CLOUDFLARE_ACCOUNT_ID`.
 5. Actions settings: workflow `GITHUB_TOKEN` default read-only; Actions may not
    create or approve PRs; immutable releases enabled if available.

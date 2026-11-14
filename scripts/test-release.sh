@@ -96,4 +96,15 @@ else
   bad "deploy dry-run: $out"
 fi
 
+# Preview (upload a version, no traffic change) and promote (route 100% to a reviewed version).
+expect_fail "preview non-bundle" "is not a release bundle" "$root/scripts/deploy.sh" --preview "$tmp/a"
+if out=$(env -u CLOUDFLARE_API_TOKEN "$root/scripts/deploy.sh" --preview --dry-run "$site" 2>&1) && grep -q "dry-run: exiting now" <<<"$out"; then
+  ok "preview dry-run"
+else
+  bad "preview dry-run: $out"
+fi
+expect_fail "promote bad version id" "invalid version id" "$root/scripts/deploy.sh" --promote 'x;rm' 9.8.7
+expect_fail "promote bad version" "invalid version" "$root/scripts/deploy.sh" --promote 0123abcd-0000-4000-8000-000000000000 '1.0;rm'
+expect_fail "promote without token" "CLOUDFLARE_API_TOKEN not set" env -u CLOUDFLARE_API_TOKEN "$root/scripts/deploy.sh" --promote 0123abcd-0000-4000-8000-000000000000 9.8.7
+
 ((fails == 0)) && echo "release tests passed" || { echo "$fails release test(s) failed" >&2; exit 1; }
