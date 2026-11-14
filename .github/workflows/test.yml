@@ -134,6 +134,14 @@ jobs:
       - name: Install Playwright ${{ matrix.browser }}
         run: npx playwright install --with-deps ${{ matrix.browser }}
 
+      # The runner has no sound server; Firefox's AudioContext stays suspended without one.
+      - name: Start a null PulseAudio sink
+        run: |
+          sudo apt-get install -y --no-install-recommends pulseaudio
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=null
+          pactl set-default-sink null
+
       - name: E2E (${{ matrix.browser }})
         env:
           E2E_PROJECT: ${{ matrix.browser }}

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { FIREFOX_NO_LOCAL_VOICE, FIREFOX_VOICE_DOM } from './browsers';
+import { FIREFOX_VOICE_DOM } from './browsers';
 
 // Phase 3 "done when": a MOCK device completes a multi-round session eyes-free; overlap alerts
 // immediately and the session continues; commands work from the keyboard without visible controls.
@@ -36,6 +36,10 @@ async function setup(page: Page, drill: string, rounds: number, followOffset = 0
   await page.getByLabel('Rest (s)').fill('1');
   await page.getByLabel('Countdown (s)').fill('1');
   await expect(page.getByRole('region', { name: 'Session', exact: true }).getByRole('alert')).toHaveCount(0); // drill accepted
+  // Playwright's Firefox (speech-dispatcher) and WebKit builds on Linux report no local voice, so
+  // spoken summaries are withheld by design until the user consents to network voices. Consent
+  // there so the summary assertions run; Chromium keeps the default (local voices only).
+  if (page.context().browser()?.browserType().name() !== 'chromium') await page.getByRole('checkbox', { name: /Allow network voices/ }).check();
   await page.getByRole('button', { name: 'Enable session audio' }).click();
   await expect(page.getByTestId('session-audio')).toHaveText('running');
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
@@ -85,7 +89,7 @@ test('eyes-free MOCK guided session: keyboard start, overlap alert, session comp
 });
 
 test('keyboard-only commands: pause, resume, complete (self-paced), skip, stop', async ({ page, browserName }) => {
-  test.skip(browserName === 'firefox', FIREFOX_NO_LOCAL_VOICE);
+  test.skip(browserName === 'firefox', FIREFOX_VOICE_DOM); // passes alone (2/2), flaky under 4 workers (1/3)
   test.setTimeout(60_000);
   const foreign = trackOrigins(page);
   // MOCK holds 0.3 above the 40% target, so auto-completion never fires; rounds end by command only.
