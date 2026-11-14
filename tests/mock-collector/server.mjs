@@ -1,16 +1,20 @@
 #!/usr/bin/env node
 // *** MOCK GT7 COLLECTOR *** Synthetic brake/throttle only. NOT the real gt7-telemetry-collector
-// and NOT evidence of GT7 behavior. Implements the DRAFT wire protocol v1 in docs/input-protocol.md.
+// and NOT evidence of GT7 or collector behavior. Speaks the collector-owned contract gt7.inputs.v1
+// (gt7-telemetry-collector v0.3.0, docs/input-protocol.md) closely enough to exercise the trainer client.
 import { createServer } from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { WebSocketServer } from 'ws';
 
-const PROTOCOL = 'tbt-inputs';
-const VERSION = 1;
+const PROTOCOL = 'gt7.inputs.v1';
 const LOOPBACK = /^(127\.\d+\.\d+\.\d+|::1|localhost)$/;
-const MAX_BATCH = 128; // must match the client's cap (docs/input-protocol.md)
 const DEFAULT_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173'];
+const CAPS = {
+  brake: { available: true, unit: 'percent', min: 0, max: 100 },
+  throttle: { available: true, unit: 'percent', min: 0, max: 100 },
+  steering: { available: false, reason: 'driver_steering_input_unverified' },
+};
 
 const smooth = (x) => {
   const c = Math.min(1, Math.max(0, x));
@@ -24,138 +28,129 @@ export function syntheticSample(ms) {
   return { brake: Math.round(brake * 10) / 10, throttle: Math.round(throttle * 10) / 10 };
 }
 
-const tokenOk = (expected, got) => {
-  if (typeof got !== 'string') return false;
-  const a = Buffer.from(expected);
-  const b = Buffer.from(got);
-  return a.length === b.length && timingSafeEqual(a, b);
-};
+const digest = (s) => createHash('sha256').update(s).digest();
+
+/**
+ * Parse Sec-WebSocket-Protocol like the collector (its ADR 0003): exactly one exact `gt7.inputs.v1`,
+ * at most one `gt7.token.*`, no empty entries, at most 8 entries. Returns { token } or null (-> 400).
+ */
+function parseSubprotocols(header) {
+  if (typeof header !== 'string') return null;
+  const entries = header.split(',').map((e) => e.trim());
+  if (entries.length > 8 || entries.some((e) => !e)) return null;
+  if (entries.filter((e) => e === PROTOCOL).length !== 1 || entries.some((e) => e !== PROTOCOL && e.toLowerCase() === PROTOCOL)) return null;
+  const tokens = entries.filter((e) => e.startsWith('gt7.token.'));
+  return tokens.length > 1 ? null : { token: tokens[0]?.slice('gt7.token.'.length) };
+}
 
 /**
  * Start the MOCK collector. Resolves once listening.
  * isSlow(ws) decides when a client is "not keeping up" (default: bufferedAmount over highWaterBytes);
- * tests may inject it because loopback kernel buffers hide real backpressure for a long time.
+ * tests inject it because loopback kernel buffers hide real backpressure for a long time.
  */
 export async function startMockCollector({
   host = '127.0.0.1',
-  port = 8787,
-  path = '/v1/inputs',
+  port = 8765,
   origins = DEFAULT_ORIGINS,
   token,
   maxClients = 4,
-  maxInboundBytes = 4096,
-  maxFrameBytes = 16 * 1024,
   hz = 60,
-  heartbeatMs = 1000,
-  queueMax = 256,
+  queueMax = 64,
   highWaterBytes = 64 * 1024,
-  helloTimeoutMs = 5000,
-  rateLimitPerSec = 5,
+  sourceTimeoutMs = 2000,
+  startPaused = false,
   isSlow = (ws) => ws.bufferedAmount > highWaterBytes,
   log = () => {},
 } = {}) {
-  if (!LOOPBACK.test(host) && !token) throw new Error('Refusing to bind a non-loopback host without --token (LAN use requires pairing).');
-  // ponytail: batch size bounds message size only because frames are tiny; size-aware split if frames grow.
-  if (MAX_BATCH * 80 > maxFrameBytes) throw new Error('maxFrameBytes too small for MAX_BATCH frames');
-  const http = createServer((_req, res) => res.writeHead(426).end('MOCK collector: WebSocket only\n'));
-  const wss = new WebSocketServer({ noServer: true, maxPayload: maxInboundBytes });
-  const clients = new Set(); // handshaken clients: { ws, queue, dropFrom, dropTo }
+  if (!LOOPBACK.test(host) && !token) throw new Error('Refusing to bind a non-loopback host without a token (GT7_WS_TOKEN).');
+  const sessionId = randomBytes(16).toString('hex');
+  const send = (ws, m) => ws.send(JSON.stringify({ type: m.type, protocol: PROTOCOL, sessionId, ...m }));
+  const http = createServer((req, res) => {
+    if (req.url === '/healthz' && req.method === 'GET') return res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end('{"status":"ok"}');
+    res.writeHead(req.url === '/v1/stream' ? 426 : 404).end('MOCK collector\n');
+  });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 1024, perMessageDeflate: false, handleProtocols: () => PROTOCOL });
+  const clients = new Set(); // { ws, queue, lastSent }
   const t0 = performance.now();
-  let seq = 0;
-  let paused = false;
+  let seq = 0n;
+  let paused = startPaused;
+  let state = 'waiting_for_source';
+  let lastFrameAt = 0;
+  let received = 0;
 
   http.on('upgrade', (req, socket, head) => {
     const reject = (status, text) => {
-      log(`reject ${status} ${text}`);
-      socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\n\r\n`);
+      log(`reject ${status} ${text}`); // never log Sec-WebSocket-Protocol: it carries the token
+      socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     };
     socket.on('error', () => {});
-    // CSWSH defence first: browsers always send Origin; CORS does not protect WebSockets.
-    if (!origins.includes(req.headers.origin)) return reject(403, 'Forbidden');
     let pathname;
     try {
       pathname = new URL(req.url, 'http://x').pathname; // untrusted request target
     } catch {
       return reject(400, 'Bad Request');
     }
-    if (pathname !== path) return reject(404, 'Not Found');
-    wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws));
+    if (pathname !== '/v1/stream') return reject(404, 'Not Found');
+    // Same order as the collector: Origin, subprotocol, token, capacity.
+    if (!origins.includes(req.headers.origin)) return reject(403, 'Forbidden');
+    const sp = parseSubprotocols(req.headers['sec-websocket-protocol']);
+    if (!sp) return reject(400, 'Bad Request');
+    if (token && !(sp.token !== undefined && timingSafeEqual(digest(token), digest(sp.token)))) return reject(401, 'Unauthorized');
+    if (wss.clients.size >= maxClients) return reject(503, 'Service Unavailable');
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      const c = { ws, queue: [], lastSent: null };
+      clients.add(c);
+      send(ws, { type: 'hello', collectorVersion: 'mock-0.3.0 (MOCK)', canonicalSchemaVersion: 1, capabilities: CAPS, status: state });
+      ws.on('message', () => {
+        received++;
+        ws.close(1008, 'read_only_stream');
+      });
+      ws.on('close', () => clients.delete(c));
+      ws.on('error', () => {});
+    });
   });
 
-  function onConnection(ws) {
-    if (wss.clients.size > maxClients) return ws.close(1013, 'server-full');
-    const fail = (code, errCode, message) => {
-      ws.send(JSON.stringify({ type: 'error', code: errCode, message }));
-      ws.close(code, errCode);
-    };
-    const helloTimer = setTimeout(() => fail(1002, 'hello-timeout', 'no hello received'), helloTimeoutMs);
-    let client = null;
-    let windowStart = Date.now();
-    let count = 0;
-    ws.on('message', (data, isBinary) => {
-      if (Date.now() - windowStart >= 1000) (windowStart = Date.now()), (count = 0);
-      if (++count > rateLimitPerSec) return fail(1008, 'rate-limit', 'too many messages');
-      if (client) return; // read-only stream: post-hello messages are ignored (but rate limited)
-      clearTimeout(helloTimer);
-      let m;
-      try {
-        m = isBinary ? null : JSON.parse(String(data));
-      } catch {
-        m = null;
-      }
-      if (!m || m.type !== 'hello' || m.protocol !== PROTOCOL || !Array.isArray(m.versions)) return fail(1002, 'bad-hello', 'expected hello');
-      if (!m.versions.includes(VERSION)) return fail(4000, 'unsupported-version', `server supports version ${VERSION}`);
-      if (token && !tokenOk(token, m.pairingToken)) return fail(1008, 'unauthorized', 'pairing token missing or wrong'); // never log the token
-      ws.send(
-        JSON.stringify({
-          type: 'welcome',
-          version: VERSION,
-          collectorVersion: 'mock-0.1.0',
-          sourceId: 'gt7-mock-0',
-          capabilities: {
-            brake: { available: true, rawUnit: 'percent' },
-            throttle: { available: true, rawUnit: 'percent' },
-            steering: { available: false, reason: 'MOCK: GT7 driver steering input is not verified; not provided.' },
-          },
-          heartbeatMs,
-          maxFrameBytes, // largest message the server will SEND; batches are split to fit
-        }),
-      );
-      client = { ws, queue: [], dropFrom: null, dropTo: null };
-      clients.add(client);
-    });
-    ws.on('close', () => {
-      clearTimeout(helloTimer);
-      if (client) clients.delete(client);
-    });
-    ws.on('error', () => {});
-  }
-
   const tick = setInterval(() => {
-    if (paused) return;
-    const ts = Math.round(performance.now() - t0);
-    const frame = { seq: ++seq, ts, ...syntheticSample(ts) };
+    const t = performance.now();
+    if (paused) {
+      if (state === 'source_live' && t - lastFrameAt >= sourceTimeoutMs) {
+        state = 'source_stale';
+        for (const c of clients) {
+          c.queue = []; // queued samples at or below the stale point are discarded
+          send(c.ws, { type: 'status', state, reason: 'no_accepted_frames_within_timeout' });
+        }
+      }
+      return;
+    }
+    lastFrameAt = t;
+    if (state !== 'source_live') {
+      const reason = state === 'waiting_for_source' ? 'first_frame' : 'source_resumed';
+      state = 'source_live';
+      for (const c of clients) send(c.ws, { type: 'status', state, reason });
+    }
+    const ms = Math.round(t - t0);
+    const frame = { seq: ++seq, ...syntheticSample(ms) };
     for (const c of clients) {
       c.queue.push(frame);
-      if (c.queue.length > queueMax) {
-        const dropped = c.queue.shift(); // drop-oldest; never unbounded
-        c.dropFrom ??= dropped.seq;
-        c.dropTo = dropped.seq;
-      }
+      if (c.queue.length > queueMax) c.queue.shift(); // drop-oldest; reported via droppedSincePrevious
       if (isSlow(c.ws)) continue;
-      if (c.dropFrom !== null) {
-        c.ws.send(JSON.stringify({ type: 'gap', fromSeq: c.dropFrom, toSeq: c.dropTo, reason: 'slow-consumer' }));
-        c.dropFrom = c.dropTo = null;
+      for (const f of c.queue) {
+        const droppedSincePrevious = c.lastSent === null ? 0 : Number(f.seq - c.lastSent - 1n);
+        c.lastSent = f.seq;
+        send(c.ws, {
+          type: 'sample',
+          sequence: String(f.seq),
+          packageId: Number(f.seq % 4294967296n),
+          source: 'UNSPECIFIED',
+          recvTimestamp: new Date().toISOString(),
+          sourceGap: false,
+          droppedSincePrevious,
+          inputs: { brake: f.brake, throttle: f.throttle, steering: null },
+        });
       }
-      for (let i = 0; i < c.queue.length; i += MAX_BATCH) c.ws.send(JSON.stringify({ type: 'frames', frames: c.queue.slice(i, i + MAX_BATCH) }));
       c.queue = [];
     }
   }, 1000 / hz);
-
-  const hb = setInterval(() => {
-    if (paused) return;
-    for (const c of clients) if (!isSlow(c.ws)) c.ws.send(JSON.stringify({ type: 'heartbeat', seq }));
-  }, heartbeatMs);
 
   await new Promise((resolve, reject) => {
     http.once('error', reject);
@@ -165,17 +160,23 @@ export async function startMockCollector({
   const actualPort = http.address().port;
   return {
     port: actualPort,
-    url: `ws://${host.includes(':') ? `[${host}]` : host}:${actualPort}${path}`,
+    sessionId,
+    url: `ws://${host.includes(':') ? `[${host}]` : host}:${actualPort}/v1/stream`,
     clientCount: () => clients.size,
-    /** Stop all frames and heartbeats (simulates a hung collector). */
+    /** Number of data messages clients sent (each one closes that client with 1008). */
+    received: () => received,
+    /** Stop/resume producing frames (simulates GT7 paused / no packets -> source_stale after sourceTimeoutMs). */
     setPaused: (p) => void (paused = p),
+    /** Like the collector on SIGTERM: close every client with 1001 collector_shutdown. */
     close: () =>
       new Promise((resolve) => {
         clearInterval(tick);
-        clearInterval(hb);
-        for (const ws of wss.clients) ws.terminate();
-        wss.close();
-        http.close(() => resolve());
+        for (const ws of wss.clients) ws.close(1001, 'collector_shutdown');
+        setTimeout(() => {
+          for (const ws of wss.clients) ws.terminate();
+          wss.close();
+          http.close(() => resolve());
+        }, 50);
       }),
   };
 }
@@ -184,14 +185,14 @@ if (import.meta.main) {
   const { values } = parseArgs({
     options: {
       host: { type: 'string', default: '127.0.0.1' },
-      port: { type: 'string', default: '8787' },
+      port: { type: 'string', default: '8765' },
       origin: { type: 'string', multiple: true },
-      token: { type: 'string' },
       hz: { type: 'string', default: '60' },
       'max-clients': { type: 'string', default: '4' },
+      'source-timeout-ms': { type: 'string', default: '2000' },
     },
   });
-  const token = values.token ?? process.env.TBT_MOCK_TOKEN;
+  const token = process.env.GT7_WS_TOKEN || undefined; // env only, like the collector
   const s = await startMockCollector({
     host: values.host,
     port: Number(values.port),
@@ -199,9 +200,10 @@ if (import.meta.main) {
     token,
     hz: Number(values.hz),
     maxClients: Number(values['max-clients']),
+    sourceTimeoutMs: Number(values['source-timeout-ms']),
     log: (m) => console.error(`[mock-collector] ${m}`),
   });
-  console.error(`[mock-collector] MOCK listening on ${s.url} origins=${(values.origin ?? DEFAULT_ORIGINS).join(',')} token=${token ? 'required' : 'none'}`);
+  console.error(`[mock-collector] MOCK gt7.inputs.v1 on ${s.url} origins=${(values.origin ?? DEFAULT_ORIGINS).join(',')} token=${token ? 'required' : 'none'}`);
   const stop = () => s.close().then(() => process.exit(0));
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);

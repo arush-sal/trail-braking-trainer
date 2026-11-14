@@ -1,12 +1,14 @@
 // @vitest-environment node
-// Integration: real gt7Client against the MOCK collector (tests/mock-collector/server.mjs) on an ephemeral port.
+// Integration: real gt7Client against the MOCK gt7.inputs.v1 collector (tests/mock-collector/server.mjs) on an ephemeral port.
+// The MOCK is not the real gt7-telemetry-collector; contract conformance comes from the copied v0.3.0 fixtures.
 import { afterEach, describe, expect, it } from 'vitest';
-import { connect as netConnect } from 'node:net';
 import { WebSocket as WsClient } from 'ws';
 import { startMockCollector, syntheticSample, type MockCollector, type MockCollectorOptions } from '../../../../../tests/mock-collector/server.mjs';
 import { createGt7Client, type Gt7Client, type Gt7Event, type SocketLike } from './gt7Client';
+import { parseServerMessage } from './protocol';
 
 const ORIGIN = 'http://localhost:5173';
+const TOKEN = '0123456789abcdef'.repeat(4);
 let server: MockCollector | undefined;
 let client: Gt7Client | undefined;
 
@@ -16,19 +18,12 @@ afterEach(async () => {
   client = server = undefined;
 });
 
-const start = async (o: MockCollectorOptions = {}) => (server = await startMockCollector({ port: 0, hz: 200, heartbeatMs: 100, ...o }));
-const withOrigin = (origin: string) => (url: string) => new WsClient(url, { origin }) as unknown as SocketLike;
+const start = async (o: MockCollectorOptions = {}) => (server = await startMockCollector({ port: 0, hz: 200, sourceTimeoutMs: 150, ...o }));
+const withOrigin = (origin: string) => (url: string, protocols: string[]) => new WsClient(url, protocols, { origin }) as unknown as SocketLike;
 
-function run(url: string, o: { origin?: string; pairingToken?: string; reconnect?: { baseMs: number; maxMs: number } } = {}) {
+function run(url: string, o: { origin?: string; token?: string } = {}) {
   const events: Gt7Event[] = [];
-  client = createGt7Client({
-    url,
-    pairingToken: o.pairingToken,
-    createSocket: withOrigin(o.origin ?? ORIGIN),
-    pageProtocol: 'http:',
-    reconnect: o.reconnect ?? { baseMs: 50, maxMs: 200 },
-    onEvent: (e) => events.push(e),
-  });
+  client = createGt7Client({ url, token: o.token, createSocket: withOrigin(o.origin ?? ORIGIN), pageProtocol: 'http:', reconnect: { baseMs: 50, maxMs: 200 }, onEvent: (e) => events.push(e) });
   return events;
 }
 
@@ -41,6 +36,17 @@ async function until(pred: () => boolean, ms = 3000) {
 }
 const frames = (ev: Gt7Event[]) => ev.flatMap((e) => (e.type === 'frame' ? [e.frame] : []));
 const errors = (ev: Gt7Event[]) => ev.flatMap((e) => (e.type === 'error' ? [e] : []));
+const statuses = (ev: Gt7Event[]) => ev.flatMap((e) => (e.type === 'status' ? [e.status] : []));
+/** Raw `ws` client: resolves the HTTP status of a rejected upgrade, or the close code. */
+const rawConnect = (url: string, protocols: string[], origin = ORIGIN) =>
+  new Promise<{ status?: number; ws: WsClient; msgs: string[] }>((resolve) => {
+    const ws = new WsClient(url, protocols, { origin });
+    const msgs: string[] = [];
+    ws.on('message', (d) => msgs.push(String(d)));
+    ws.on('unexpected-response', (_req, res) => resolve({ status: res.statusCode, ws, msgs }));
+    ws.on('error', () => {});
+    ws.on('open', () => resolve({ ws, msgs }));
+  });
 
 describe('mock collector synthetic signal', () => {
   it('never overlaps brake and throttle', () => {
@@ -51,162 +57,136 @@ describe('mock collector synthetic signal', () => {
   });
 });
 
-describe('gt7Client <-> MOCK collector', () => {
-  it('happy path: handshake, sequenced frames, steering unavailable', async () => {
+describe('MOCK collector speaks gt7.inputs.v1', () => {
+  it('every message parses with the contract parser; hello first; healthz ok', async () => {
     const s = await start();
-    const ev = run(s.url);
+    const { ws, msgs } = await rawConnect(s.url, ['gt7.inputs.v1']);
+    expect(ws.protocol).toBe('gt7.inputs.v1');
+    await until(() => msgs.length > 20);
+    ws.close();
+    const parsed = msgs.map(parseServerMessage);
+    expect(parsed[0].type).toBe('hello');
+    expect(new Set(parsed.map((m) => m.type !== 'ignored' && m.sessionId)).size).toBe(1);
+    const res = await fetch(`http://127.0.0.1:${s.port}/healthz`);
+    expect([res.status, await res.json(), res.headers.get('cache-control')]).toEqual([200, { status: 'ok' }, 'no-store']);
+  });
+
+  it.each([
+    ['no subprotocol', [], ORIGIN, 400],
+    ['case-variant subprotocol', ['GT7.inputs.v1'], ORIGIN, 400],
+    ['two token entries', ['gt7.inputs.v1', 'gt7.token.a', 'gt7.token.b'], ORIGIN, 400],
+    ['wrong Origin', ['gt7.inputs.v1'], 'https://evil.example', 403],
+  ])('rejects %s before upgrade (HTTP %i)', async (_n, protocols, origin, status) => {
+    const s = await start();
+    expect((await rawConnect(s.url, protocols, origin)).status).toBe(status);
+  });
+
+  it('token: missing/wrong -> 401, right -> open; never echoed', async () => {
+    const s = await start({ token: TOKEN });
+    expect((await rawConnect(s.url, ['gt7.inputs.v1'])).status).toBe(401);
+    expect((await rawConnect(s.url, ['gt7.inputs.v1', 'gt7.token.wrong'])).status).toBe(401);
+    const ok = await rawConnect(s.url, ['gt7.inputs.v1', `gt7.token.${TOKEN}`]);
+    expect(ok.ws.protocol).toBe('gt7.inputs.v1');
+    ok.ws.close();
+  });
+
+  it('max clients -> 503', async () => {
+    const s = await start({ maxClients: 1 });
+    const a = await rawConnect(s.url, ['gt7.inputs.v1']);
+    expect((await rawConnect(s.url, ['gt7.inputs.v1'])).status).toBe(503);
+    a.ws.close();
+  });
+
+  it('any client message -> close 1008 read_only_stream; oversized -> 1009', async () => {
+    const s = await start();
+    for (const [payload, code] of [['hi', 1008], ['x'.repeat(2000), 1009]] as const) {
+      const { ws } = await rawConnect(s.url, ['gt7.inputs.v1']);
+      const closed = new Promise<[number, string]>((r) => ws.once('close', (c, why) => r([c, String(why)])));
+      ws.send(payload);
+      const [c, why] = await closed;
+      expect(c).toBe(code);
+      if (code === 1008) expect(why).toBe('read_only_stream');
+    }
+  });
+});
+
+describe('gt7Client <-> MOCK collector', () => {
+  it('happy path: subprotocol handshake, sequenced frames, steering unavailable, nothing sent', async () => {
+    const s = await start({ token: TOKEN });
+    const ev = run(s.url, { token: TOKEN });
     await until(() => frames(ev).length >= 30);
-    const w = ev.find((e) => e.type === 'welcome');
-    expect(w && w.type === 'welcome' && w.welcome.capabilities.steering.available).toBe(false);
+    const h = ev.find((e) => e.type === 'hello');
+    expect(h && h.type === 'hello' && h.hello).toMatchObject({ collectorVersion: expect.stringMatching(/MOCK/), capabilities: { steering: { available: false } } });
     const fs = frames(ev);
     for (const f of fs) {
-      expect(f.source).toBe('gt7');
-      expect(f.sourceId).toBe('gt7-mock-0');
+      expect(f.sourceId).toBe(`gt7:${s.sessionId}`);
       expect(f.steering).toEqual({ available: false, rawValue: null, rawUnit: 'unavailable', normalized: null });
-      expect(f.brake.rawUnit).toBe('percent');
       expect(f.brake.normalized! > 0 && f.throttle.normalized! > 0).toBe(false);
-      expect(typeof f.sourceTimestampMs).toBe('number');
     }
     for (let i = 1; i < fs.length; i++) expect(fs[i].sequence).toBe(fs[i - 1].sequence! + 1);
     expect(client!.counters()).toMatchObject({ gaps: 0, duplicates: 0, reconnects: 0 });
-    expect(ev.some((e) => e.type === 'status' && e.status === 'live')).toBe(true);
+    expect(s.received()).toBe(0);
   });
 
-  it('rejects a wrong Origin at upgrade (403) and reports it as unreachable/origin', async () => {
-    const s = await start();
-    const ev = run(s.url, { origin: 'https://evil.example' });
-    await until(() => errors(ev).length > 0);
-    expect(errors(ev)[0]).toMatchObject({ code: 'unreachable' });
-    expect(errors(ev)[0].message).toMatch(/Origin/);
+  it('wrong token -> unreachable (browser-like 1006), keeps retrying, no frames', async () => {
+    const s = await start({ token: TOKEN });
+    const ev = run(s.url, { token: 'f'.repeat(64) });
+    await until(() => errors(ev).length >= 2);
+    expect(errors(ev)[0]).toMatchObject({ code: 'unreachable', fatal: false });
+    expect(errors(ev)[0].message).toMatch(/--ws-origin=/);
     expect(frames(ev)).toHaveLength(0);
   });
 
-  it('rejects a missing Origin (non-browser client without allowlisted Origin)', async () => {
-    const s = await start();
-    const sock = new WebSocket(s.url); // Node global WebSocket sends no Origin
-    const code = await new Promise<number>((r) => (sock.onclose = (e) => r(e.code)));
-    expect(code).toBe(1006);
-  });
-
-  it('wrong or missing pairing token -> 1008 policy error, no reconnect loop, no frames', async () => {
-    const s = await start({ token: 'correct-horse' });
-    const ev = run(s.url, { pairingToken: 'wrong' });
-    await until(() => errors(ev).length > 0);
-    expect(errors(ev)[0]).toMatchObject({ code: 'policy', fatal: true });
-    expect(errors(ev)[0].message).toMatch(/unauthorized/);
-    await new Promise((r) => setTimeout(r, 300));
-    expect(client!.counters().reconnects).toBe(0);
-    expect(frames(ev)).toHaveLength(0);
-    client!.close();
-    const ev2 = run(s.url, { pairingToken: 'correct-horse' });
-    await until(() => frames(ev2).length > 0);
-  });
-
-  it('survives a malformed request target (400) and keeps serving', async () => {
-    const s = await start();
-    const raw = await new Promise<string>((resolve) => {
-      const c = netConnect(s.port, '127.0.0.1', () =>
-        c.write(`GET //[ HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: ${ORIGIN}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`),
-      );
-      let buf = '';
-      c.on('data', (d) => (buf += d));
-      c.on('close', () => resolve(buf));
-    });
-    expect(raw).toMatch(/^HTTP\/1\.1 400/);
+  it('waiting_for_source -> source_live/first_frame', async () => {
+    const s = await start({ startPaused: true });
     const ev = run(s.url);
+    await until(() => statuses(ev).includes('waiting'));
+    expect(frames(ev)).toHaveLength(0);
+    s.setPaused(false);
     await until(() => frames(ev).length > 0);
+    expect(statuses(ev)).toEqual(['connecting', 'waiting', 'live']);
   });
 
-  it('oversize inbound message closes with 1009', async () => {
-    const s = await start({ maxInboundBytes: 256 });
-    const sock = new WsClient(s.url, { origin: ORIGIN });
-    await new Promise((r) => sock.once('open', r));
-    sock.send(JSON.stringify({ type: 'hello', protocol: 'tbt-inputs', versions: [1], pad: 'x'.repeat(1000) }));
-    const code = await new Promise<number>((r) => sock.once('close', (c) => r(c)));
-    expect(code).toBe(1009);
-  });
-
-  it('unsupported client version -> 4000 close', async () => {
+  it('source stale -> stale + source-lost without reconnecting; resume -> live', async () => {
     const s = await start();
-    const sock = new WsClient(s.url, { origin: ORIGIN });
-    await new Promise((r) => sock.once('open', r));
-    sock.send(JSON.stringify({ type: 'hello', protocol: 'tbt-inputs', versions: [99] }));
-    const code = await new Promise<number>((r) => sock.once('close', (c) => r(c)));
-    expect(code).toBe(4000);
+    const ev = run(s.url);
+    await until(() => frames(ev).length > 5);
+    s.setPaused(true);
+    await until(() => ev.some((e) => e.type === 'source-lost'));
+    expect(ev.find((e) => e.type === 'source-lost')).toMatchObject({ reason: 'no_accepted_frames_within_timeout' });
+    const n = frames(ev).length;
+    s.setPaused(false);
+    await until(() => frames(ev).length > n + 5);
+    expect(statuses(ev).slice(-2)).toEqual(['stale', 'live']);
+    expect(client!.counters().reconnects).toBe(0);
   });
 
-  it('max clients: extra connection closed 1013', async () => {
-    const s = await start({ maxClients: 1 });
-    const a = new WsClient(s.url, { origin: ORIGIN });
-    await new Promise((r) => a.once('open', r));
-    const b = new WsClient(s.url, { origin: ORIGIN });
-    const code = await new Promise<number>((r) => b.once('close', (c) => r(c)));
-    expect(code).toBe(1013);
-    a.close();
-  });
-
-  it('slow client: bounded queue drops oldest and signals gap; client flags quality.gap', async () => {
+  it('slow client: bounded queue drops oldest; droppedSincePrevious flags quality.gap', async () => {
     let slow = false;
-    const s = await start({ queueMax: 300, heartbeatMs: 1000, isSlow: () => slow }); // stale after 3 s > slow window
+    const s = await start({ queueMax: 50, isSlow: () => slow, sourceTimeoutMs: 5000 });
     const ev = run(s.url);
     await until(() => frames(ev).length >= 5);
     slow = true;
-    await new Promise((r) => setTimeout(r, 2000)); // ~400 frames at 200 Hz, queue holds 300
+    await new Promise((r) => setTimeout(r, 600)); // ~120 frames at 200 Hz, queue holds 50
     slow = false;
-    await until(() => ev.some((e) => e.type === 'gap'));
-    const gap = ev.find((e) => e.type === 'gap');
-    expect(gap).toMatchObject({ reason: 'slow-consumer' });
     await until(() => frames(ev).some((f) => f.quality.gap));
-    expect(client!.counters().gaps).toBeGreaterThanOrEqual(1);
-    expect(client!.counters().missing).toBeGreaterThan(0);
-    // backlog of 300 frames must arrive as several batches within the advertised size cap
+    expect(client!.counters().gaps).toBe(1);
+    expect(client!.counters().missing).toBeGreaterThan(30);
     expect(errors(ev)).toHaveLength(0);
-  }, 10000);
-
-  it('heartbeat timeout -> stale + source-lost, then reconnect in a new epoch', async () => {
-    const s = await start();
-    const ev = run(s.url);
-    await until(() => frames(ev).length > 0);
-    s.setPaused(true);
-    await until(() => ev.some((e) => e.type === 'source-lost'));
-    expect(ev.some((e) => e.type === 'status' && e.status === 'stale')).toBe(true);
-    s.setPaused(false);
-    await until(() => ev.some((e) => e.type === 'epoch' && e.epoch === 2));
-    const before = frames(ev).length;
-    await until(() => frames(ev).length > before + 5);
-    expect(client!.counters().reconnects).toBeGreaterThanOrEqual(1);
-    const epoch2Frames = ev.filter((e) => e.type === 'frame' && e.epoch === 2);
-    expect(epoch2Frames.length).toBeGreaterThan(0);
   });
 
-  it('reconnects after server restart with a new epoch (no state merge)', async () => {
+  it('collector shutdown (1001) -> reconnect, fresh hello with a new sessionId, no stitching', async () => {
     const s = await start();
-    const port = s.port;
+    const { port, sessionId } = s;
     const ev = run(s.url);
     await until(() => frames(ev).length > 0);
     await s.close();
-    await until(() => errors(ev).some((e) => e.code === 'connection-lost'));
-    server = await startMockCollector({ port, hz: 200, heartbeatMs: 100 });
+    await until(() => errors(ev).some((e) => e.code === 'shutdown'));
+    server = await startMockCollector({ port, hz: 200 });
     await until(() => ev.some((e) => e.type === 'frame' && e.epoch > 1), 5000);
-    // sequence restarted on the new server; epoch 2's first frame is not flagged as a gap/dup vs epoch 1
     const first2 = ev.find((e) => e.type === 'frame' && e.epoch > 1);
-    expect(first2 && first2.type === 'frame' && first2.frame.quality.gap).toBe(false);
+    expect(first2 && first2.type === 'frame' && first2.frame).toMatchObject({ sourceId: `gt7:${server.sessionId}`, quality: { gap: false } });
+    expect(server.sessionId).not.toBe(sessionId);
     expect(client!.counters().duplicates + client!.counters().outOfOrder).toBe(0);
-  });
-
-  it('refuses https page -> ws:// public host without opening a socket (mixed content)', () => {
-    const ev: Gt7Event[] = [];
-    let opened = false;
-    client = createGt7Client({
-      url: 'ws://collector.example.com/v1/inputs',
-      pageProtocol: 'https:',
-      createSocket: () => {
-        opened = true;
-        throw new Error('should not open');
-      },
-      onEvent: (e) => ev.push(e),
-    });
-    expect(opened).toBe(false);
-    expect(errors(ev)[0]).toMatchObject({ code: 'mixed-content', fatal: true });
   });
 });

@@ -1,209 +1,171 @@
-# GT7 collector input protocol (WebSocket) - DRAFT v1
+# GT7 collector input stream: consuming `gt7.inputs.v1`
 
-- Status: **proposed**. To be frozen in Phase 5 after browser/LAN validation (see ADR 0005).
+- Status: **adopted** (ADR 0011, supersedes the draft protocol of ADR 0005).
 - Requirements: R-004; spec sections 1 (S5), 4.1, 4.3, 4.4, 8, 11.1.
-- Implemented so far only by the **MOCK** collector (`tests/mock-collector/server.mjs`) and the
-  trainer client (`apps/web/src/input/gt7/`). The real `gt7-telemetry-collector` does **not**
-  implement this yet (Phase 5, separate repo, needs owner authorization).
+- Contract owner: **gt7-telemetry-collector**. The authoritative reference is its
+  [browser streaming doc](https://github.com/arush-sal/gt7-telemetry-collector/blob/v0.3.0/docs/content/docs/browser-streaming.md)
+  and ADRs
+  [0001](https://github.com/arush-sal/gt7-telemetry-collector/blob/v0.3.0/docs/adr/0001-optional-websocket-browser-sink.md),
+  [0002](https://github.com/arush-sal/gt7-telemetry-collector/blob/v0.3.0/docs/adr/0002-browser-input-contract-v1.md),
+  [0003](https://github.com/arush-sal/gt7-telemetry-collector/blob/v0.3.0/docs/adr/0003-websocket-threat-model.md)
+  at tag **v0.3.0**. If this page and those disagree, the collector docs win. The trainer
+  consumes the contract and does not change it.
+- Fixtures: verbatim snapshot in `apps/web/src/input/gt7/testdata/v1/` (v0.3.0, commit
+  `378eb89`; do not edit, re-copy to update).
+- Code: `apps/web/src/input/gt7/{protocol.ts,gt7Client.ts,Gt7Panel.tsx}`.
 
-## Transport
+## Running the collector for the trainer
 
-- Browser opens `ws://<host>:<port>/v1/inputs` (or `wss://`). Read-only stream: after `hello`
-  the client sends nothing (extra messages are ignored and rate limited).
-- Compact JSON, one UTF-8 text message per WebSocket message. Every message has a `type`.
-- Unknown fields must be ignored by receivers; unknown `type` is a protocol error.
-
-## Messages
-
-### client -> server: `hello` (first and only message)
-
-```json
-{"type":"hello","protocol":"tbt-inputs","versions":[1],"pairingToken":"..."}
+```sh
+gt7-collector --ps5=<ps5-ip> --rtps=none --ws-listen=127.0.0.1:8765 --ws-origin=<page origin>
 ```
 
-- `versions`: protocol versions the client supports. Server picks one or closes `4000`.
-- `pairingToken`: optional; required when the server is configured with one. Sent **only** here,
-  never in the URL or query string (URLs leak into logs, history, Referer).
-- Server closes `1002` if no valid hello arrives within 5 s.
+- `<page origin>` is the trainer page's `location.origin`, exact match, no trailing slash or
+  path: `http://localhost:5173` for `make dev`, `https://trail-braking-trainer.aru.sh` for
+  production. The GT7 panel prints the exact command for the page you are on.
+- Optional: `--ws-max-clients` (default 4), `--ws-client-buffer` (64), `--ws-write-timeout`
+  (2s), `--ws-source-timeout` (2s). Token: `GT7_WS_TOKEN` environment variable (32-256 of
+  `[A-Za-z0-9._~-]`, e.g. `openssl rand -hex 32`), optional on loopback, required for LAN binds.
+- Trainer default URL: `ws://127.0.0.1:8765/v1/stream`. `GET /healthz` returns
+  `{"status":"ok"}` (the trainer does not use it).
+- Replay without a PS5: the collector CLI has **no** replay flag. Replay is only available
+  through the collector's Go library (`replay.Open` + `Source.Play` into `ingest.NewPipeline`).
+  That is collector-side work; the trainer does not build it.
 
-### server -> client: `welcome`
+## Handshake and authentication
 
-```json
-{"type":"welcome","version":1,"collectorVersion":"0.3.0","sourceId":"gt7-<id>",
- "capabilities":{
-   "brake":{"available":true,"rawUnit":"percent"},
-   "throttle":{"available":true,"rawUnit":"percent"},
-   "steering":{"available":false,"reason":"GT7 driver steering input not verified"}},
- "heartbeatMs":1000,"maxFrameBytes":4096}
-```
+- `new WebSocket(url, ["gt7.inputs.v1"])`, or with a token
+  `new WebSocket(url, ["gt7.inputs.v1", "gt7.token." + token])`.
+- The token travels **only** in that subprotocol entry: never in the URL (the client rejects
+  URLs carrying credentials or `?token=`), never in a message, never persisted (password field,
+  React state only). The collector negotiates only `gt7.inputs.v1` and never echoes the token.
+- After open the client asserts `ws.protocol === "gt7.inputs.v1"`; anything else is a fatal
+  error (not a v0.3.0+ collector).
+- **Read-only.** The client never sends a message. The collector closes `1008 read_only_stream`
+  if one arrives.
 
-- `rawUnit: "percent"` = 0-100, matching collector proto `brake`/`throttle` (fields 26/25).
-- `steering.available` is **false** in v1. `wheel_rotation` is unconfirmed and front wheel
-  steering angles are vehicle output, not driver input; neither may be mapped to steering.
-  The trainer client forces steering unavailable regardless of what the server claims until a
-  genuine steering-input signal is validated (spec 4.3, 14).
-- `maxFrameBytes`: largest message the **server will send**. The client rejects any message
-  larger than `min(64 KiB, maxFrameBytes)` before parsing (64 KiB before `welcome`) as a fatal
-  protocol error. The server's own inbound limit (`hello`) is separate and not advertised.
-- No frames are sent before `welcome`; a client receiving one treats it as a protocol error.
+## Messages (server to client)
 
-### server -> client: `frames`
+JSON text frames. Every message has `type`, `protocol: "gt7.inputs.v1"` and `sessionId`
+(32 lowercase hex, per collector process).
 
-```json
-{"type":"frames","frames":[{"seq":1042,"ts":51234,"brake":38.5,"throttle":0}]}
-```
-
-- Batched, at most **128 frames** per message (larger batch = fatal protocol error); the server
-  splits backlogs into several messages within `maxFrameBytes`.
-- `seq` is a strictly increasing integer per server process (starts anywhere).
-- `ts`: collector monotonic milliseconds (source timestamp, diagnostics/jitter only; the
-  trainer times control on its own `performance.now()` arrival time).
-- `brake`/`throttle`: number or `null` (unavailable/invalid sample). Never `0` for "missing".
-- No steering field in v1.
-
-### server -> client: `gap`
-
-```json
-{"type":"gap","fromSeq":1043,"toSeq":1101,"reason":"slow-consumer"}
-```
-
-Sent before the next `frames` when frames were dropped for this client. Inclusive range.
-The client marks the next emitted frame `quality.gap=true` and counts the range as missing; if
-the sequence jump describes the same hole it is counted once (max of the two), not twice.
-
-### server -> client: `heartbeat`
-
-```json
-{"type":"heartbeat","seq":1101}
-```
-
-Every `heartbeatMs` while the client is keeping up. `seq` = last produced sequence.
-Heartbeats are liveness only and never count as fresh samples.
-Client marks the source **stale** after `3 x heartbeatMs` without any message, emits
-`source-lost`, discards the connection and reconnects (new epoch).
-
-### server -> client: `error`
-
-```json
-{"type":"error","code":"unauthorized","message":"pairing token missing or wrong"}
-```
-
-Sent immediately before a policy/protocol close. Codes: `bad-hello`, `hello-timeout`,
-`unsupported-version`, `unauthorized`, `rate-limit`. Never echoes secrets.
-
-## Close codes
-
-| Code | Meaning | Client action |
+| Type | Fields the trainer uses | Trainer handling |
 |---|---|---|
-| 1000 | normal | reconnect only if user still wants it |
-| 1002 | protocol error (bad/missing hello) | fatal, show error |
-| 1008 | policy: `unauthorized`, `rate-limit` | fatal, check token / allowlist |
-| 1009 | inbound message too big | fatal |
-| 1013 | server full (max connections) | retry with backoff |
-| 4000 | unsupported protocol version | fatal, show versions |
-| 1006 (browser) | upgrade rejected (403 bad Origin, 404) or unreachable | retry; message explains the browser cannot distinguish these |
+| `hello` (first, once per connection) | `collectorVersion`, `canonicalSchemaVersion`, `capabilities`, `status` | Shown in the panel. `status` maps to `waiting` / `live` / `stale`. Brake/throttle capability must be `{available:true, unit:"percent", min:0, max:100}`. |
+| `sample` | `sequence` (decimal string, parsed with `BigInt`), `packageId`, `source`, `recvTimestamp`, `sourceGap`, `droppedSincePrevious`, `inputs` | Mapped to an `InputFrame` (below). |
+| `status` | `state`, `reason` | `source_stale` -> panel `stale` + `source-lost` (session SOURCE_LOST path); `source_live` -> `live`. Unknown states ignored. |
 
-Origin rejection happens at the HTTP upgrade (`403`), so the browser only sees `1006`.
+Parsing rules (`parseServerMessage`, tested over every v0.3.0 fixture and transcript):
 
-## Flow control
+- Any `protocol` other than `gt7.inputs.v1` is rejected. Unknown `type` is ignored. Unknown
+  fields are ignored.
+- Known messages are checked field by field against the schema (session id pattern, sequence
+  `^(0|[1-9][0-9]{0,19})$` and <= 2^64-1, `packageId` uint32, `source` enum, RFC 3339 UTC
+  `recvTimestamp`, percent 0..100 or `null`, `droppedSincePrevious >= 0`). A violation is a
+  fatal protocol error for that connection.
+- Schema-invalid but consumer-tolerated (collector ADR 0002 rule 6: apply the rules, do not
+  hard-fail on full schema validation; confirmed by the collector owner 2026-11-14). Three of the
+  12 `invalid/` fixtures are therefore accepted or ignored; the other 9 are rejected:
+  - `unknown.type.json`: unknown `type` is ignored.
+  - `hello.steering-available.json`: accepted, steering forced unavailable (spec 4.3).
+  - `sample.steering-zero.json`: `inputs.steering` is ignored (never mapped); the sample is
+    accepted. It would only matter if a hello advertised steering, which v0.3.0 never does and
+    which the trainer's steering gate overrides anyway.
+- Per connection: `hello` must come first and only once; every later message must carry the
+  hello's `sessionId` (mismatch = fatal). Duplicate or decreasing `sequence` values are
+  dropped and counted.
 
-- Per-client **bounded** queue (mock: 256 frames). When the client is not keeping up
-  (`bufferedAmount` over a high-water mark) frames accumulate; on overflow the **oldest** is
-  dropped and the dropped range is reported with one `gap` message before the next batch.
-  Never unbounded buffering.
-- Client side: sequence tracking per connection epoch. Gap -> `quality.gap=true` on the next
-  emitted frame + counters; duplicate and out-of-order frames are dropped and counted.
-- When the connection leaves `live` (stale, reconnecting, error, closed) the trainer panel
-  emits one frame with all channels `available:false`/`null` and `quality.stale=true`, so
-  consumers stop presenting the last sample as live.
-- Reconnect: exponential backoff (mock defaults 500 ms -> 10 s). Each connection is a new
-  **epoch**; sequence state and attempt state are never merged across epochs (spec 4.4).
+## Mapping to `InputFrame`
 
-## Security
+| `InputFrame` | From |
+|---|---|
+| `source`, `sourceId` | `"gt7"`, `"gt7:" + sessionId` |
+| `brake`, `throttle` | `rawValue` = percent, `rawUnit: "percent"`, `normalized` = percent / 100. `null` (no reading) -> `available:false` with `rawValue`/`normalized` `null` (never 0): the core requires values when available, so a required channel going null invalidates the attempt |
+| `steering` | Always `{available:false, rawValue:null, normalized:null}`, regardless of server claims |
+| `sequence` | `Number(sequence)` when <= 2^53-1, otherwise omitted (informational only) |
+| `sourceTimestampMs` | `Date.parse(recvTimestamp)` (collector wall clock, diagnostics only) |
+| `receivedMonoMs` | `performance.now()` on arrival (control timing) |
+| `quality.gap` | `sourceGap` (loss upstream of the collector) **or** `droppedSincePrevious > 0` (loss inside the collector). The core invalidates the attempt on a gap frame. |
 
-- **Loopback by default** (`127.0.0.1`). LAN binding is an explicit opt-in (`--host`) and the
-  mock refuses a non-loopback bind without a pairing token.
-- **Origin allowlist** checked first at upgrade, before parsing anything else (malformed request
-  targets get `400`, malformed HTTP is dropped; the server must survive untrusted input); missing or unlisted Origin -> `403`. This is the
-  CSWSH defence: any web page can open a WebSocket to `127.0.0.1`, and CORS does **not** apply
-  to WebSockets, so CORS headers protect nothing here.
-- **Pairing token** for LAN use, compared in constant time, sent only in `hello`, never in URLs,
-  never logged, never persisted by the trainer (`type=password`, in-memory only).
-- **Limits**: max connections (`1013`), max inbound message size (`1009`), inbound rate limit
-  (`1008 rate-limit`), hello timeout, bounded outbound queues.
-- Read-only: no commands accepted. No telemetry leaves the LAN (no Cloudflare/remote relay).
-- Plain `ws://` on a LAN is unencrypted; the token can be sniffed on the local network. `wss://`
-  needs a certificate trusted by the browser - open question for Phase 5.
-- Production collector must additionally avoid accidental internet exposure (no `0.0.0.0`
-  default, warn on public interfaces) - Phase 5.
+Counters in the panel: frames, gaps / missing (from `droppedSincePrevious`), source gaps,
+duplicates, out-of-order, reconnects.
 
-### Mixed content and Chrome Local Network Access - ALL UNVERIFIED
+When the panel leaves `live` (stale, reconnecting, error, closed) it emits one frame with all
+channels unavailable and `quality.stale=true`, so consumers stop treating the last sample as
+live. A reconnect is a new epoch with a fresh `hello` (the `sessionId` may change); sequence
+state is never carried across connections (spec 4.4, contract "no stitching").
 
-Reference: <https://developer.chrome.com/docs/modern-web-guidance/guides/security/local-network-access>.
-Every browser behavior below is **UNVERIFIED** pending manual tests recorded in
-`docs/validation-log.md`.
+## Close codes and failures
 
-- UNVERIFIED: an `https://` page (deployed trainer) opening `ws://` to a **public** hostname is
-  blocked as mixed content. The client refuses this up front with an explanation.
-- UNVERIFIED: per the Chrome LNA guide, `ws://` from an `https://` page is exempt from mixed
-  content blocking when the host is a private/loopback IP literal, `*.localhost` or `.local`
-  name, and is gated by a `local-network` / `loopback-network` permission prompt. Custom
-  non-`.local` DNS names need `wss://`. The WebSocket constructor takes no `targetAddressSpace`.
-- UNVERIFIED: LNA applies when crossing to a more private address space
-  (public -> local -> loopback). `http://localhost` dev pages calling `127.0.0.1` do not cross.
-- UNVERIFIED: the guide says LNA permissions are denied automatically in insecure (`http://`)
-  top-level contexts - i.e. an `http://` LAN-hosted trainer may be unable to reach another LAN
-  host in Chrome.
-- UNVERIFIED: guide recommends querying `navigator.permissions.query({name:'local-network'})`
-  and only connecting from a user gesture when the state is `prompt`. The prototype connects
-  only from the Connect button; permission querying is not implemented yet.
-- UNVERIFIED: Firefox and Safari behavior for https -> `ws://127.0.0.1` and -> LAN IP
-  (Safari historically blocks mixed content even to loopback).
-- A denied permission, rejected Origin and unreachable collector all look like `1006` to the
-  page; the UI message lists all three causes.
+| Code / case | Meaning | Client action |
+|---|---|---|
+| 1001 `collector_shutdown` | Collector stopping or restarting (also token rotation) | Reconnect with backoff (500 ms doubling, capped at 30 s) |
+| 1008 `read_only_stream` | Client sent data (trainer bug) | Fatal |
+| 1009 | Client frame over the 1 KiB read limit | Fatal |
+| 4000 `slow_consumer` | Tab missed `--ws-write-timeout` | Reconnect |
+| Negotiated protocol != `gt7.inputs.v1` | Not a v0.3.0+ collector | Fatal |
+| No `hello` within 5 s | Hung server | Reconnect |
+| 1006 before open | See below | Retry with backoff, show hint |
+| Any other close after open | Connection lost | Reconnect |
 
-#### Public-information notes (from `docs/research/public-evidence.md` section 6) - UNVERIFIED locally
+A browser sees only `1006` for every pre-upgrade HTTP rejection (403 Origin, 401 token,
+400 subprotocol, 421 Host, 503 too many clients), for a collector that is not running, and for
+a Local Network Access block. The panel picks the hint from the LNA permission state it queried
+at Connect (`rejectionHint`, unit tested):
 
-- Chrome 147 release notes (stable 2026-04-07): WebSocket connections to local addresses now
-  trigger Local Network Access permission prompts. Permissions: `loopback-network`
-  (127.0.0.0/8, ::1, localhost) and `local-network` (RFC1918, link-local, ULA, `.local`).
-- `ws://` from `https://` is exempt from mixed content only for private/loopback IP literals,
-  `localhost` and `.local`, and only once the prompt is granted. Other names need `wss://`.
-- `http://` (insecure) top-level pages are auto-denied LNA permissions, so an `http://` LAN-hosted
-  trainer reaching another LAN host is likely blocked in current Chrome. `http://localhost` ->
-  `ws://127.0.0.1` does not cross address spaces and should not prompt.
-- The legacy permission name `local-network-access` crashed older Chrome renderers; the client
-  never queries it.
-- Safari/WebKit (bugs 171934, 173161, 279249): `ws://` from HTTPS is likely rejected as mixed
-  content even to `127.0.0.1`. Use `wss://` with a locally trusted certificate, or serve the
-  trainer from `http://localhost`.
-- Firefox: LNA prompting is rolling out (Firefox 151+, pref `network.lna.blocking`); WebSocket
-  specifics are unknown.
+- `denied`: the panel does not connect; it says how to re-allow local network access in the
+  site settings.
+- anything else, including `prompt`: collector rejection. Only `denied` is treated as blocked;
+  Chrome also reports `prompt` where no prompt applies (`http://localhost` -> `127.0.0.1` is one
+  address space). Collector rejection - not running, Origin not allowed (with the exact
+  `--ws-origin=<location.origin>`), token missing/wrong, too many clients; check the collector
+  DEBUG log or devtools Network.
 
-#### Client behavior
+Known limitation: the page cannot tell "collector down" from "collector rejected this page"
+(both are 1006). A `/healthz` probe could separate them, but CSP `connect-src` allows only
+`ws:`/`wss:` (no `http://127.0.0.1`) and is deliberately not widened, so the trainer does not
+probe. The hint lists both.
 
-- On the Connect click (a user gesture), the panel makes a best-effort
-  `navigator.permissions.query({name: 'loopback-network' | 'local-network'})` for the target
-  host, wrapped in try/catch. It shows `granted` / `prompt` / `denied` / `unsupported`.
-- If the state is `denied`, the panel does not connect and tells the user to allow access in
-  the browser's site settings. Otherwise it connects; the browser shows any prompt itself.
-- Safari + `https:` page + `ws://` target: the panel shows a non-blocking warning suggesting
-  `wss://` with a locally trusted certificate.
+Token hygiene: the client redacts the token from every string it hands the UI (error
+messages, close reasons, hello `collectorVersion` / steering reason, status reason), and the
+subprotocol-mismatch error uses fixed text, so a server that selects the offered
+`gt7.token.<token>` entry cannot surface it.
 
-## Running the MOCK collector
+## Browsers, HTTPS and local network access - ALL UNVERIFIED
+
+Everything in this section is **UNVERIFIED** for this app (public information only; see
+`docs/research/public-evidence.md` section 6 and the collector's validation log). Only the
+`http://localhost` page -> `ws://127.0.0.1` path has automated evidence, against the MOCK.
+
+- Chrome / Edge (147+): a WebSocket from an `https://` public site to `127.0.0.1` or a LAN IP
+  shows a Local Network Access permission prompt (`loopback-network` / `local-network`); it is
+  not blocked as mixed content for loopback/private IP literals, `localhost` and `.local`.
+  Other hostnames need `wss://`. `http://` LAN-hosted pages are auto-denied LNA.
+- Firefox: normally allows loopback `ws://` from an HTTPS page; LNA prompting is rolling out
+  (151+, `network.lna.blocking`).
+- Safari: likely blocks `ws://` from an HTTPS page even to `127.0.0.1` (WebKit bugs 171934,
+  173161, 279249). Use `wss://` via collector `--ws-tls-cert` / `--ws-tls-key` with a
+  certificate trusted for `127.0.0.1`, or open the trainer from `http://localhost`. The panel
+  shows this warning for Safari on HTTPS.
+- The client refuses `https://` page -> `ws://` to a public hostname up front (mixed content).
+- On Connect (a user gesture) the panel queries
+  `navigator.permissions.query({name: 'loopback-network' | 'local-network'})` best-effort and
+  shows the state; it never queries the legacy `local-network-access` name.
+
+## MOCK collector (tests only)
+
+`tests/mock-collector/server.mjs` is a **MOCK** speaking `gt7.inputs.v1` closely enough to
+exercise the client (subprotocol + optional token checks, Origin allowlist, hello / sample /
+status, stale and resume, `droppedSincePrevious` from a bounded drop-oldest queue, 1008 on any
+client message, 1009 over 1 KiB, 503 at capacity, 1001 on close, `/healthz`). It is not the
+collector and not evidence of collector or GT7 behavior.
 
 ```bash
-source ~/.nvm/nvm.sh && nvm use 26.13.1
-node tests/mock-collector/server.mjs                       # 127.0.0.1:8787, origins http://localhost:5173 + http://127.0.0.1:5173
-node tests/mock-collector/server.mjs --origin https://<trainer-origin> --origin http://localhost:5173
-TBT_MOCK_TOKEN=... node tests/mock-collector/server.mjs --host 192.168.1.20  # LAN: token required
+node tests/mock-collector/server.mjs   # 127.0.0.1:8765/v1/stream, origins http://localhost:5173 + http://127.0.0.1:5173
+node tests/mock-collector/server.mjs --origin https://<trainer-origin> --source-timeout-ms 2000
+GT7_WS_TOKEN=$(openssl rand -hex 32) node tests/mock-collector/server.mjs --host 192.168.1.20  # LAN: token required
 ```
 
-Flags: `--host`, `--port`, `--origin` (repeatable), `--token` (or `TBT_MOCK_TOKEN`, prefer the
-env var to keep it out of shell history/`ps`), `--hz` (default 60), `--max-clients` (default 4).
-The mock emits synthetic brake/throttle in percent (never overlapping), steering unavailable.
-It is labelled MOCK everywhere and is **not** evidence of GT7 or collector behavior.
-
-Tests: `apps/web/src/input/gt7/*.test.ts` (unit) and `gt7Client.integration.test.ts` (node
-environment, starts the mock in-process on an ephemeral port; uses the `ws` client to set
-`Origin`, since Node's global `WebSocket` sends none).
+Tests: `protocol.test.ts` (every fixture), `gt7Client.test.ts` (all four transcripts, close
+codes, session tracking), `gt7Client.integration.test.ts` (client against the MOCK in Node),
+`tests/e2e/gt7.spec.ts` (real browser WebSocket against the MOCK).

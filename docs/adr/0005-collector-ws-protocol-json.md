@@ -1,6 +1,6 @@
 # 0005. Collector WebSocket protocol: compact JSON, draft v1
 
-- Status: proposed
+- Status: superseded by 0011 (the collector released its own contract, `gt7.inputs.v1`, in v0.3.0)
 - Date: 2026-11-14
 - Requirements: R-004
 

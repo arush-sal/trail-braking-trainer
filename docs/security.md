@@ -15,7 +15,7 @@ repository at the date above. Hardware and real-browser behavior is still unveri
 |---|---|---|
 | Session input traces and results | JS + Go memory in one tab. Gone on reload or reset | Personal training data. Spec 1.1 and R-027 forbid keeping or uploading it |
 | Microphone audio (voice commands, opt-in) | The browser's SpeechRecognition engine (may be a remote service) | Privacy. Spec 6.2 |
-| Collector pairing token (GT7, opt-in) | A React state variable. Sent only inside the WebSocket hello message | Gives access to the user's collector on the LAN |
+| Collector token (GT7 `GT7_WS_TOKEN`, opt-in) | A React state variable. Sent only as the `gt7.token.<token>` WebSocket subprotocol entry (`gt7.inputs.v1`, ADR 0011) | Gives access to the user's collector on the LAN |
 | Bundle integrity | GitHub Release, then Cloudflare | Users run whatever code is served |
 | Release signing identity | GitHub OIDC -> Sigstore, plus the Cloudflare API token in the `production` environment | Supply chain |
 
@@ -42,7 +42,7 @@ repository at the date above. Hardware and real-browser behavior is still unveri
 
 | Threat | Boundary | Mitigation in this repo | Residual / owner |
 |---|---|---|---|
-| **S**poofed collector, or another site's page driving the user's collector (CSWSH) | 2 | The token goes only in the hello message, never in the URL. The URL is rejected if it contains credentials. Mixed content is refused for public hosts. Protocol version check | The collector's Origin allowlist and pairing check are in the collector repo (Phase 5, not done) |
+| **S**poofed collector, or another site's page driving the user's collector (CSWSH) | 2 | The token goes only in the subprotocol, never in the URL or a message. The URL is rejected if it contains credentials. Mixed content is refused for public hosts. The client asserts the negotiated `gt7.inputs.v1` and never sends data | The collector (v0.3.0) enforces the exact Origin allowlist, token, Host check and caps (its ADR 0003); not verified from this app against a live collector |
 | **S**poofed release or CDN content | 3, 4 | Cosign bundles, GitHub attestations, `checksums.txt`, and deploy of the verified Release assets (`docs/release-process.md`) | Users have to verify. See README "Verifying a release" |
 | **T**ampered or hostile collector frames | 2 | `CLIENT_MAX_MESSAGE_BYTES` cap. Strict parser (`protocol.ts`). Duplicate and out-of-order frames are dropped. Gaps are counted. Go `Decode` rejects malformed frames. Steering is forced unavailable | - |
 | **T**ampered bundle in transit | 3 | HTTPS (`workers.dev` sits under the HSTS-preloaded `.dev` TLD; HSTS for the custom domain is a Cloudflare zone setting). `nosniff`. CSP `script-src 'self'` | No SRI. All scripts are same-origin, so it would add nothing |
@@ -65,7 +65,7 @@ Checked on 2026-11-14 against `apps/web/src` and a production `make build`:
 | Network calls in source | Only `fetch` of the same-origin, content-hashed `assets/core-<hash>.wasm`, a `<script>` for same-origin `assets/wasm_exec-<hash>.js`, and `new WebSocket(url)` after the user clicks Connect (`gt7Client.ts`). No other `fetch`, `XMLHttpRequest` or `EventSource` |
 | Third-party requests at runtime | From app code: none. On the production host Cloudflare injects its Web Analytics beacon (`static.cloudflareinsights.com` script, reports to `cloudflareinsights.com`; cookieless, page views and load timing, no session data; ADR 0009). The e2e specs assert that no third-party origins are requested, and the CSP blocks them (verified below) |
 | Secrets in the bundle | None. The only `https://` strings in `dist/assets/*.js` are React error-docs and namespace URLs, plus two public research links rendered as `<a>`. `core.wasm` contains only `https://go.dev/doc/godebug` and no local paths |
-| Tokens in URLs | None. The pairing token is sent only in the hello message. `checkUrl` rejects URLs that carry credentials (`protocol.test.ts`) |
+| Tokens in URLs | None. The token is sent only as a WebSocket subprotocol entry. `checkUrl` rejects URLs that carry credentials (`protocol.test.ts`). Note: the token is visible in devtools (Sec-WebSocket-Protocol header) |
 | Test hooks in production | `make test-e2e` fails if `__tbtTest` appears in `apps/web/dist`. Re-checked: 0 matches |
 | Network TTS voices | Automatic voice choice uses only `localService` voices. Network voices are listed but disabled until the user ticks "Allow network voices" (in memory only, resets on reload) because spoken summaries contain results. With no local voice, summaries stay silent and a notice is shown; countdown/alerts use the browser default (`announcer.test.ts`, `ControlsPanel.test.tsx`) |
 | Voice privacy notice | `ControlsPanel`: notice and acknowledgement before enabling. Remote vs on-device status shown. Keys and buttons always work (`ControlsPanel.test.tsx`) |
@@ -128,8 +128,9 @@ The unit test `apps/web/src/app/headers.test.ts` checks the directives staticall
   `require-trusted-types-for 'script'` would need a policy or a module import of the runtime.
   Low value while `script-src 'self'` is in place.
 - **`connect-src ws: wss:` is broad** (trade-off above).
-- **The collector security controls** (Origin allowlist, pairing, caps) are not built yet.
-  They belong to the collector repository (Phase 5). The trainer client only covers its own side.
+- **The collector security controls** (Origin allowlist, token, Host check, caps) live in
+  gt7-telemetry-collector v0.3.0 (its ADR 0003). They are not verified from this app against
+  a live collector; the trainer covers only its own side.
 - **Headless Firefox on the agent host** delivered MOCK input at about 18 Hz idle and about
   1 Hz during a session. That is main-thread load, not the CSP. The new slow-input warning
   shows it, and the session-to-results CSP test is skipped on Firefox. Logged in

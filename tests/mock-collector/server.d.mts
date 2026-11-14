@@ -4,25 +4,25 @@ import type { WebSocket } from 'ws';
 export type MockCollectorOptions = {
   host?: string;
   port?: number;
-  path?: string;
   origins?: string[];
+  /** Like the collector's GT7_WS_TOKEN: offered by clients as the `gt7.token.<token>` subprotocol. */
   token?: string;
   maxClients?: number;
-  maxInboundBytes?: number;
-  maxFrameBytes?: number;
   hz?: number;
-  heartbeatMs?: number;
   queueMax?: number;
   highWaterBytes?: number;
-  helloTimeoutMs?: number;
-  rateLimitPerSec?: number;
+  sourceTimeoutMs?: number;
+  /** Start in waiting_for_source with no frames until setPaused(false). */
+  startPaused?: boolean;
   isSlow?: (ws: WebSocket) => boolean;
   log?: (msg: string) => void;
 };
 export type MockCollector = {
   port: number;
+  sessionId: string;
   url: string;
   clientCount(): number;
+  received(): number;
   setPaused(paused: boolean): void;
   close(): Promise<void>;
 };

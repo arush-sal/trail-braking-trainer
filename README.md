@@ -46,7 +46,7 @@ flowchart LR
   subgraph SRC[Input sources]
     M[MOCK]
     G[Gamepad API wheel and pedals]
-    C[GT7 collector WebSocket<br/>client only, endpoint not built yet]
+    C[GT7 collector WebSocket<br/>gt7.inputs.v1, collector v0.3.0+]
   end
   SRC --> F[InputFrame<br/>normalized, null when unavailable]
   F --> B[sessionBridge<br/>60 Hz batching]
@@ -73,7 +73,7 @@ browser, until the final manual run is recorded in `docs/validation-log.md`.
 | Commands | One dispatcher for keyboard, learned gamepad buttons, voice (browser SpeechRecognition, privacy notice) and UI. Voice and gamepad buttons are unverified. |
 | Sessions | Freeform and guided (preset catalog, plus a parameter drill editor with core-validated preview), rounds/rest/countdown, source-loss handling. MOCK sessions of every drill type complete in e2e. |
 | Metrics, graphs | Separate accuracy / smoothness / timing / consistency metrics (no combined score; formulas in `docs/metric-definitions.md`), desired-vs-actual graphs per channel, suggestions applied only on confirm. Thresholds are PROPOSED. Results stay in memory only. |
-| GT7 collector WebSocket | Trainer client tested only against a MOCK server (`tests/mock-collector/`). The collector endpoint is pending separate-repository work. **GT7 steering is unavailable.** |
+| GT7 collector WebSocket | Consumes `gt7.inputs.v1` from gt7-telemetry-collector v0.3.0+ (ADR 0011). Tested against the collector's contract fixtures and a MOCK server only; **not yet verified with a live PS5 from this app**. **GT7 steering is unavailable.** |
 | Security, privacy, errors | CSP and security headers (`apps/web/public/_headers`), threat model and privacy review (`docs/security.md`), and a recovery path for every spec 8 failure. The production site loads Cloudflare Web Analytics (cookieless page-load metrics, no session data; ADR 0009). |
 | Release, SBOM, signing, deploy | Tag-driven release workflow: reproducible tarball, Syft SBOMs, Cosign + GitHub attestations, GitHub Release (`docs/release-process.md`). Deploy: Cloudflare Workers Static Assets via the `cf` CLI at `trail-braking-trainer.aru.sh` (ADR 0008). Every release since v0.1.0 is deployed through this pipeline. |
 
@@ -87,12 +87,12 @@ Per-requirement status: `docs/requirements.md`. Hardware evidence:
 | MOCK input, all drills, audio, results | Works in automated tests (headless Chromium baseline; Firefox/WebKit in the CI matrix). |
 | Gamepad API wheels and pedals (Chrome/Edge/Firefox) | Implemented, **unverified on hardware**. Browsers expose a device only after you press a pedal or button on the page. |
 | Separate pedal and wheel devices | Supported by per-control device mapping. Unverified. |
-| GT7 brake and throttle via the collector | Client ready; the collector endpoint is not built yet (Phase 5, separate repository). |
+| GT7 brake and throttle via the collector | Run `gt7-collector --ps5=<ps5-ip> --rtps=none --ws-listen=127.0.0.1:8765 --ws-origin=<page origin>` (v0.3.0+), then connect from the GT7 panel. Unverified with a live PS5 from this app. |
 | GT7 steering | **Unavailable.** Evidence is inconclusive (`docs/research/gt7-steering-evidence.md`). The trainer never substitutes wheel angle or yaw. |
 | Spoken output | Uses local speech voices by default. Network voices (which may send spoken text, including your results, to the browser vendor) are used only after you explicitly allow them in Controls. |
 | Voice commands | Only where the browser has SpeechRecognition (not Firefox). The browser may process audio remotely. Keys and buttons always work. |
 | Hidden or background tab | Not supported. Input and audio may be throttled. Keep the tab visible. |
-| HTTPS page to `ws://` LAN collector | Browser-dependent (Chrome local-network permission prompt; Safari likely blocks). Untested; see `docs/input-protocol.md`. |
+| HTTPS page to `ws://` collector | Browser-dependent (Chrome/Edge show a local-network permission prompt; Firefox normally allows loopback; Safari likely blocks and needs `wss://`). Untested; see `docs/input-protocol.md`. |
 | Offline use | Not supported. There is no service worker, by design. |
 
 ## Developer quickstart
@@ -149,7 +149,7 @@ happened and what to do. The full list is in `docs/security.md`, "Error recovery
 
 - No hardware, listening or real-browser evidence yet. All sound mappings, thresholds and
   presets are PROPOSED.
-- GT7: steering unavailable. The collector endpoint does not exist yet.
+- GT7: steering unavailable. Brake/throttle via collector v0.3.0 are unverified with a live PS5, an HTTPS page, LAN/`wss://` and Safari.
 - Background tabs are unsupported, and there is no native adapter.
 - Voice recognition depends on the browser and may be remote. It is not available offline.
 - There is no history, export or saved settings. Mappings and bindings reset on reload.

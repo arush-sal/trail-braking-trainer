@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { InputFrame } from '../types';
 import { createGt7Client, queryLnaPermission, type Gt7Client, type Gt7ClientOptions, type Gt7Counters, type Gt7Status } from './gt7Client';
-import { browserWarnings, lnaPermissionFor, unavailableFrame, type Welcome } from './protocol';
+import { DEFAULT_URL, PROTOCOL, browserWarnings, lnaPermissionFor, rejectionHint, sourceIdFor, unavailableFrame, type Hello } from './protocol';
 
-const DEFAULT_URL = 'ws://127.0.0.1:8787/v1/inputs';
+const origin = () => globalThis.location?.origin ?? 'http://localhost:5173';
 const pct = (v: number | null | undefined) => (v == null ? 'n/a' : `${Math.round(v * 100)}%`);
 
 type Props = {
@@ -14,9 +14,9 @@ type Props = {
 
 export function Gt7Panel({ onFrame, createClient = createGt7Client }: Props) {
   const [url, setUrl] = useState(DEFAULT_URL);
-  const [token, setToken] = useState(''); // in memory only; never persisted or put in the URL
+  const [token, setToken] = useState(''); // in memory only; offered as a subprotocol, never persisted or put in the URL
   const [status, setStatus] = useState<Gt7Status | 'idle'>('idle');
-  const [welcome, setWelcome] = useState<Welcome | null>(null);
+  const [hello, setHello] = useState<Hello | null>(null);
   const [error, setError] = useState('');
   const [lna, setLna] = useState('');
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -58,14 +58,14 @@ export function Gt7Panel({ onFrame, createClient = createGt7Client }: Props) {
     if (mine !== gen.current) return; // superseded by Disconnect, unmount or a later Connect
     setLna(perm ? `${perm}: ${state}` : '');
     if (state === 'denied') {
-      setError(`This browser has denied ${perm} access for this site. Allow local network / device access for this site in the browser's site settings (address-bar site info icon), reload, and connect again.`);
+      setError(rejectionHint(state, origin()));
       return;
     }
-    setWelcome(null);
+    setHello(null);
     latest.current = null;
     client.current = createClient({
       url,
-      pairingToken: token || undefined,
+      token: token || undefined,
       onEvent: (e) => {
         if (e.type === 'frame') {
           latest.current = e.frame;
@@ -78,13 +78,14 @@ export function Gt7Panel({ onFrame, createClient = createGt7Client }: Props) {
             onFrameRef.current?.(f, e.epoch);
           }
           live.current.live = e.status === 'live';
+          if (e.status === 'live') setError('');
           setStatus(e.status);
-        } else if (e.type === 'welcome') {
-          live.current.sourceId = e.welcome.sourceId;
-          setWelcome(e.welcome);
-        }
-        else if (e.type === 'error') setError(e.message);
-        else if (e.type === 'source-lost') setError('Collector went silent (heartbeat timeout); samples are stale and invalid until reconnected.');
+        } else if (e.type === 'hello') {
+          live.current.sourceId = sourceIdFor(e.hello.sessionId);
+          setHello(e.hello);
+        } else if (e.type === 'error') setError(e.code === 'unreachable' ? rejectionHint(state, origin()) : e.message);
+        else if (e.type === 'source-lost')
+          setError(`Collector reports the GT7 source stale (${e.reason}): no accepted packets within its --ws-source-timeout. Samples are invalid until it resumes (GT7 paused, in menus, or PS5 unreachable).`);
       },
     });
   };
@@ -97,21 +98,27 @@ export function Gt7Panel({ onFrame, createClient = createGt7Client }: Props) {
 
   const f = view.frame;
   const c = view.counters;
-  const caps = welcome?.capabilities;
+  const caps = hello?.capabilities;
   return (
     <section aria-label="GT7 collector">
-      <h2>GT7 collector (prototype)</h2>
+      <h2>GT7 collector ({PROTOCOL})</h2>
+      <p>
+        Needs gt7-telemetry-collector v0.3.0 or later running on this computer, for example:{' '}
+        <code data-testid="run-cmd">{`gt7-collector --ps5=<ps5-ip> --rtps=none --ws-listen=127.0.0.1:8765 --ws-origin=${origin()}`}</code>. Not yet
+        verified with a live PS5 from this app. Steering is never available from GT7.
+      </p>
       <label>
         Collector URL <input value={url} onChange={(e) => setUrl(e.target.value)} />
       </label>
       <label>
-        Pairing token <input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} />
+        Token (optional) <input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} />
       </label>
       <button onClick={() => void connect()}>Connect</button>
       <button onClick={disconnect}>Disconnect</button>
       <p>
         Status: <strong>{status}</strong>
-        {welcome && ` (collector ${welcome.collectorVersion}, protocol v${welcome.version}, ${welcome.sourceId})`}
+        {status === 'waiting' && ' (collector connected, no GT7 packets yet: check --ps5 and that GT7 is running)'}
+        {hello && ` (collector ${hello.collectorVersion}, ${PROTOCOL}, session ${hello.sessionId.slice(0, 8)})`}
       </p>
       {lna && <p data-testid="lna">Local network permission: {lna}</p>}
       {warnings.map((w) => (
@@ -132,7 +139,7 @@ export function Gt7Panel({ onFrame, createClient = createGt7Client }: Props) {
               <tr key={k}>
                 <td>{k}</td>
                 <td>{caps[k].available ? 'yes' : 'no'}</td>
-                <td>{caps[k].available ? caps[k].rawUnit : caps[k].reason ?? 'unavailable'}</td>
+                <td>{caps[k].available ? `${caps[k].unit} 0-100` : caps[k].reason ?? 'unavailable'}</td>
               </tr>
             ))}
           </tbody>
@@ -143,7 +150,7 @@ export function Gt7Panel({ onFrame, createClient = createGt7Client }: Props) {
         <span data-testid="throttle">{pct(f?.throttle.normalized)}</span>
       </p>
       <p data-testid="counters">
-        frames {c?.frames ?? 0} | gaps {c?.gaps ?? 0} (missing {c?.missing ?? 0}) | dups {c?.duplicates ?? 0} | out-of-order {c?.outOfOrder ?? 0} | reconnects {c?.reconnects ?? 0}
+        frames {c?.frames ?? 0} | gaps {c?.gaps ?? 0} (missing {c?.missing ?? 0}) | source gaps {c?.sourceGaps ?? 0} | dups {c?.duplicates ?? 0} | out-of-order {c?.outOfOrder ?? 0} | reconnects {c?.reconnects ?? 0}
       </p>
     </section>
   );

@@ -140,7 +140,7 @@ export function App() {
       <h1>Trail Braking Trainer</h1>
       <p className="banner" role="note">
         Pre-release build. Mock input is labelled MOCK. Wheels, pedals, sounds and browser speech are unverified until
-        recorded in the validation log. GT7 uses a prototype client tested only against a MOCK collector, and GT7 steering is
+        recorded in the validation log. GT7 uses the gt7-telemetry-collector v0.3.0 stream (gt7.inputs.v1), not yet verified with a live PS5, and GT7 steering is
         unavailable. Session results stay in this tab's memory only and are gone on reload.
       </p>
 
@@ -155,7 +155,7 @@ export function App() {
         </label>
         <label>
           <input type="radio" name="source" checked={source === 'gt7'} onChange={() => selectSource('gt7')} /> GT7
-          collector (prototype, mock server)
+          collector (gt7.inputs.v1, unverified live)
         </label>
       </fieldset>
 

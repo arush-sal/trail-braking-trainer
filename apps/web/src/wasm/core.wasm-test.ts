@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { runInThisContext } from 'node:vm';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { mockFrame } from '../input/mock/mockSource';
+import { mapSample, type Sample } from '../input/gt7/protocol';
 import { createSessionBridge, type SessionEvent, type TbtApi } from './sessionBridge';
 
 const wasmDir = new URL('../../public/wasm/', import.meta.url);
@@ -149,4 +150,39 @@ describe('session API through core.wasm', () => {
     b.command('stop');
     expect(us).toBeGreaterThan(0);
   });
+});
+
+describe('GT7 gt7.inputs.v1 samples through core.wasm', () => {
+  const SID = '4f9c2e7a1b3d5f60718293a4b5c6d7e8';
+  const sample = (seq: number, o: Partial<Sample> = {}): Sample => ({
+    sessionId: SID, sequence: BigInt(seq), packageId: seq, source: 'LIVE', recvTimestamp: '2026-11-14T12:00:00Z', sourceGap: false, droppedSincePrevious: 0, brake: 20, throttle: 0, ...o,
+  });
+  /** Drive a guided-free session to ACTIVE with good GT7 samples, then feed one `bad` sample; returns the state after it. */
+  const run = (bad: Partial<Sample>) => {
+    let t = 0;
+    const b = createSessionBridge(core.api, { now: () => t, every: () => () => undefined });
+    const errors: string[] = [];
+    b.subscribe((x) => x.error && errors.push(x.error));
+    expect(b.start({ availableAxes: ['brake', 'throttle'], controls: ['brake'], session: { rounds: 1, countdownMs: 0, roundDurationMs: 10_000, restMs: 0 } }).error).toBeUndefined();
+    b.command('start');
+    try {
+      let seq = 1;
+      for (; t <= 200; t += 1000 / 60) {
+        b.pushFrame(mapSample(sample(seq++), t));
+        b.step();
+      }
+      expect(b.getSnapshot().state).toBe('ACTIVE');
+      const f = mapSample(sample(seq, bad), t);
+      expect(core.validateFrame(JSON.stringify(f))).toBeNull(); // must reach the core, not be rejected as malformed
+      b.pushFrame(f);
+      b.step();
+      expect(errors).toEqual([]);
+      return b.getSnapshot().state;
+    } finally {
+      b.command('stop'); // one shared core: never leave a running session for the next test
+    }
+  };
+  it('a null-input sample with sourceGap invalidates the active attempt', () => expect(run({ throttle: null, sourceGap: true })).toBe('SOURCE_LOST'));
+  it('a null brake alone invalidates it (required axis unavailable)', () => expect(run({ brake: null })).toBe('SOURCE_LOST'));
+  it('droppedSincePrevious > 0 invalidates the active attempt', () => expect(run({ droppedSincePrevious: 3 })).toBe('SOURCE_LOST'));
 });

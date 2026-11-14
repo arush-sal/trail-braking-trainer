@@ -1,21 +1,39 @@
-// Browser WebSocket client for the DRAFT GT7 collector protocol v1 (docs/input-protocol.md).
-// Phase 1 prototype, exercised only against the MOCK collector so far.
+// Browser WebSocket client for the collector-owned contract gt7.inputs.v1 (gt7-telemetry-collector v0.3.0).
+// Read-only: the client never sends a message (the collector closes 1008 read_only_stream if it does).
 import type { InputFrame } from '../types';
-import { CLIENT_MAX_MESSAGE_BYTES, ProtocolError, SeqTracker, exceedsBytes, buildHello, checkUrl, closeToError, lnaPermissionFor, mapFrame, parseServerMessage, parseWelcome, type ClientError, type Welcome } from './protocol';
+import {
+  CLIENT_MAX_MESSAGE_BYTES,
+  PROTOCOL,
+  ProtocolError,
+  checkToken,
+  checkUrl,
+  closeToError,
+  exceedsBytes,
+  lnaPermissionFor,
+  mapSample,
+  parseServerMessage,
+  subprotocols,
+  type ClientError,
+  type Hello,
+  type LnaState,
+} from './protocol';
 
-export type Gt7Status = 'connecting' | 'live' | 'stale' | 'reconnecting' | 'closed' | 'error';
-export type Gt7Counters = { frames: number; gaps: number; missing: number; duplicates: number; outOfOrder: number; reconnects: number };
+export type { LnaState } from './protocol';
+/** waiting: connected, collector has no GT7 source yet. stale: collector reports source_stale. */
+export type Gt7Status = 'connecting' | 'waiting' | 'live' | 'stale' | 'reconnecting' | 'closed' | 'error';
+export type Gt7Counters = { frames: number; gaps: number; missing: number; sourceGaps: number; duplicates: number; outOfOrder: number; reconnects: number };
 export type Gt7Event =
   | { type: 'epoch'; epoch: number }
   | { type: 'status'; status: Gt7Status; epoch: number }
-  | { type: 'welcome'; welcome: Welcome; epoch: number }
+  | { type: 'hello'; hello: Hello; epoch: number }
   | { type: 'frame'; frame: InputFrame; epoch: number }
-  | { type: 'gap'; fromSeq: number; toSeq: number; reason: string; epoch: number }
-  | { type: 'source-lost'; reason: 'heartbeat-timeout'; epoch: number }
+  | { type: 'source-lost'; reason: string; epoch: number }
   | ({ type: 'error'; epoch: number } & ClientError);
 
 /** Minimal browser-WebSocket surface (also satisfied by the `ws` package client in tests). */
 export type SocketLike = {
+  /** Negotiated subprotocol (Sec-WebSocket-Protocol response). */
+  readonly protocol: string;
   send(data: string): void;
   close(code?: number, reason?: string): void;
   onopen: ((ev: unknown) => void) | null;
@@ -26,35 +44,46 @@ export type SocketLike = {
 
 export type Gt7ClientOptions = {
   url: string;
-  /** Sent only inside the first (hello) message; never in the URL, never persisted. */
-  pairingToken?: string;
+  /** Collector GT7_WS_TOKEN. Offered only as the `gt7.token.<token>` subprotocol; never in the URL, never persisted. */
+  token?: string;
   onEvent: (e: Gt7Event) => void;
-  createSocket?: (url: string) => SocketLike;
+  createSocket?: (url: string, protocols: string[]) => SocketLike;
   pageProtocol?: string;
   now?: () => number;
   reconnect?: { baseMs: number; maxMs: number };
+  /** Time from socket creation to hello. */
   handshakeTimeoutMs?: number;
-  /** Stale after heartbeatMs * staleFactor without any message. */
-  staleFactor?: number;
 };
 
 export type Gt7Client = { close(): void; counters(): Gt7Counters };
 
+const STATUS_OF = { waiting_for_source: 'waiting', source_live: 'live', source_stale: 'stale' } as const;
+
 export function createGt7Client(o: Gt7ClientOptions): Gt7Client {
   const now = o.now ?? (() => performance.now());
-  const createSocket = o.createSocket ?? ((u: string) => new WebSocket(u) as unknown as SocketLike);
-  const { baseMs, maxMs } = o.reconnect ?? { baseMs: 500, maxMs: 10_000 };
-  const counters: Gt7Counters = { frames: 0, gaps: 0, missing: 0, duplicates: 0, outOfOrder: 0, reconnects: 0 };
+  const createSocket = o.createSocket ?? ((u: string, p: string[]) => new WebSocket(u, p) as unknown as SocketLike);
+  const { baseMs, maxMs } = o.reconnect ?? { baseMs: 500, maxMs: 30_000 };
+  const counters: Gt7Counters = { frames: 0, gaps: 0, missing: 0, sourceGaps: 0, duplicates: 0, outOfOrder: 0, reconnects: 0 };
   let epoch = 0;
   let attempt = 0;
   let stopped = false;
   let sock: SocketLike | null = null;
-  let timer: ReturnType<typeof setTimeout> | undefined; // handshake / heartbeat watchdog / reconnect delay
+  let timer: ReturnType<typeof setTimeout> | undefined; // handshake watchdog / reconnect delay
 
-  const emit = (e: Gt7Event) => o.onEvent(e);
+  // Every string the panel renders can be server-controlled (close reason, hello, status reason): never let the token reach the UI.
+  const r = (m: string) => (o.token ? m.replaceAll(o.token, '<token>') : m);
+  const redact = (e: Gt7Event): Gt7Event => {
+    if (e.type === 'error') return { ...e, message: r(e.message) };
+    if (e.type === 'source-lost') return { ...e, reason: r(e.reason) };
+    if (e.type !== 'hello') return e;
+    const { capabilities: c, collectorVersion } = e.hello;
+    return { ...e, hello: { ...e.hello, collectorVersion: r(collectorVersion), capabilities: { ...c, steering: { ...c.steering, reason: r(c.steering.reason ?? '') } } } };
+  };
+  const emit = (e: Gt7Event) => o.onEvent(redact(e));
   const status = (s: Gt7Status) => emit({ type: 'status', status: s, epoch });
 
-  const pre = checkUrl(o.url, o.pageProtocol ?? globalThis.location?.protocol ?? 'http:');
+  const tokenErr = checkToken(o.token ?? '');
+  const pre = checkUrl(o.url, o.pageProtocol ?? globalThis.location?.protocol ?? 'http:') ?? (tokenErr ? { code: 'bad-token' as const, message: tokenErr, fatal: true } : null);
   if (pre) {
     emit({ type: 'error', epoch, ...pre });
     status('error');
@@ -90,75 +119,64 @@ export function createGt7Client(o: Gt7ClientOptions): Gt7Client {
     if (++epoch > 1) counters.reconnects++;
     emit({ type: 'epoch', epoch });
     status('connecting');
-    const tracker = new SeqTracker(); // per epoch: never merge sequence state across connections
-    let welcome: Welcome | null = null;
+    // Per epoch: a reconnect yields a new hello (sessionId may change); never stitch across connections.
+    let hello: Hello | null = null;
+    let lastSeq: bigint | null = null;
     let wasOpen = false;
-    let serverError = '';
-    let pendingGap = 0; // frames the server said it dropped, not yet attributed to an emitted frame
-    const watchdog = (ms: number, onFire: () => void) => {
-      clearTimeout(timer);
-      timer = setTimeout(onFire, ms);
-    };
     let s: SocketLike;
     try {
-      s = createSocket(o.url);
+      s = createSocket(o.url, subprotocols(o.token));
     } catch (e) {
       return drop({ code: 'unreachable', message: String(e), fatal: false });
     }
     sock = s;
-    watchdog(o.handshakeTimeoutMs ?? 5000, () => drop({ code: 'handshake-timeout', message: 'Collector did not complete the handshake in time.', fatal: false }));
+    timer = setTimeout(() => drop({ code: 'handshake-timeout', message: 'Collector did not send hello in time.', fatal: false }), o.handshakeTimeoutMs ?? 5000);
 
     s.onopen = () => {
       wasOpen = true;
-      s.send(buildHello(o.pairingToken));
+      if (s.protocol !== PROTOCOL)
+        // Fixed text: a hostile server could select the offered gt7.token.<token> entry.
+        drop({ code: 'version-mismatch', message: `Collector did not negotiate ${PROTOCOL}. Is this gt7-collector v0.3.0 or later with --ws-listen?`, fatal: true });
     };
-    s.onclose = (ev) => {
-      const err = closeToError(ev.code, ev.reason, wasOpen);
-      drop(serverError ? { ...err, message: `${err.message} Server said: ${serverError}` } : err);
-    };
+    s.onclose = (ev) => drop(closeToError(ev.code, ev.reason, wasOpen));
     s.onmessage = (ev) => {
       try {
         if (typeof ev.data !== 'string') throw new ProtocolError('protocol', 'binary messages are not supported');
-        const cap = Math.min(CLIENT_MAX_MESSAGE_BYTES, welcome?.maxFrameBytes ?? Infinity);
-        if (exceedsBytes(ev.data, cap)) throw new ProtocolError('protocol', `message exceeds ${cap} bytes`);
+        if (exceedsBytes(ev.data, CLIENT_MAX_MESSAGE_BYTES)) throw new ProtocolError('protocol', `message exceeds ${CLIENT_MAX_MESSAGE_BYTES} bytes`);
         const m = parseServerMessage(ev.data);
-        if (m.type === 'error') {
-          serverError = `${m.code}${m.message ? ` (${m.message})` : ''}`;
+        if (m.type === 'ignored') return; // unknown future message type
+        if (m.type === 'hello') {
+          if (hello) throw new ProtocolError('protocol', 'second hello on one connection');
+          clearTimeout(timer);
+          hello = m;
+          attempt = 0;
+          emit({ type: 'hello', hello, epoch });
+          status(STATUS_OF[hello.status]);
           return;
         }
-        if (m.type === 'welcome') {
-          welcome = parseWelcome(m);
-          attempt = 0;
-          emit({ type: 'welcome', welcome, epoch });
-          status('live');
-        } else if (!welcome) {
-          throw new ProtocolError('protocol', `${m.type} before welcome`);
-        } else if (m.type === 'gap') {
-          pendingGap += Math.max(0, m.toSeq - m.fromSeq + 1);
-          emit({ type: 'gap', fromSeq: m.fromSeq, toSeq: m.toSeq, reason: m.reason, epoch });
-        } else if (m.type === 'frames') {
-          for (const wf of m.frames) {
-            const r = tracker.observe(wf.seq);
-            if (r.kind === 'duplicate') counters.duplicates++;
-            else if (r.kind === 'out-of-order') counters.outOfOrder++;
-            if (r.kind === 'duplicate' || r.kind === 'out-of-order') continue; // never replay old samples
-            // seq jump and an explicit gap message may describe the same hole: count it once
-            const missing = Math.max(r.kind === 'gap' ? r.missing : 0, pendingGap);
-            pendingGap = 0;
-            if (missing > 0) {
-              counters.gaps++;
-              counters.missing += missing;
-            }
-            counters.frames++;
-            emit({ type: 'frame', frame: mapFrame(wf, welcome, now(), missing > 0), epoch });
-          }
+        if (!hello) throw new ProtocolError('protocol', `${m.type} before hello`);
+        if (m.sessionId !== hello.sessionId) throw new ProtocolError('protocol', `sessionId ${m.sessionId} does not match hello ${hello.sessionId}`);
+        if (m.type === 'status') {
+          if (m.state === 'source_stale') {
+            // Segment break regardless of duration (contract ordering guarantees).
+            status('stale');
+            emit({ type: 'source-lost', reason: m.reason, epoch });
+          } else if (m.state === 'source_live') status('live');
+          return; // unknown states are ignored
         }
-        const hb = welcome.heartbeatMs * (o.staleFactor ?? 3);
-        watchdog(hb, () => {
-          status('stale');
-          emit({ type: 'source-lost', reason: 'heartbeat-timeout', epoch });
-          drop(null);
-        });
+        if (lastSeq !== null && m.sequence <= lastSeq) {
+          if (m.sequence === lastSeq) counters.duplicates++;
+          else counters.outOfOrder++;
+          return; // never replay old samples
+        }
+        lastSeq = m.sequence;
+        counters.frames++;
+        if (m.sourceGap) counters.sourceGaps++;
+        if (m.droppedSincePrevious > 0) {
+          counters.gaps++;
+          counters.missing += m.droppedSincePrevious;
+        }
+        emit({ type: 'frame', frame: mapSample(m, now()), epoch });
       } catch (e) {
         const pe = e instanceof ProtocolError ? e : new ProtocolError('protocol', String(e));
         drop({ code: pe.code, message: pe.message, fatal: true });
@@ -177,8 +195,6 @@ export function createGt7Client(o: Gt7ClientOptions): Gt7Client {
     counters: () => ({ ...counters }),
   };
 }
-
-export type LnaState = 'granted' | 'prompt' | 'denied' | 'unsupported' | 'not-needed';
 
 /** Best-effort Chrome Local Network Access permission check (spec: Chrome 147+ gates local WebSockets). Never throws. */
 export async function queryLnaPermission(url: string, permissions: Permissions | undefined = globalThis.navigator?.permissions): Promise<LnaState> {
