@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "lint": "eslint .",
-    "typecheck": "node ../../node_modules/typescript7/bin/tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:wasm": "vitest run -c vitest.wasm.config.ts"
   },
   "dependencies": {
@@ -28,9 +28,8 @@
     "eslint-plugin-react-hooks": "7.1.1",
     "globals": "17.14.0",
     "jsdom": "31.0.1",
-    "typescript": "6.0.3",
+    "typescript": "7.0.2",
     "typescript-eslint": "8.72.2",
-    "typescript7": "npm:typescript@7.0.2",
     "vite": "8.3.8",
     "vitest": "5.1.0"
   }
