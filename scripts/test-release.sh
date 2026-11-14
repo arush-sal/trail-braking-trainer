@@ -107,4 +107,12 @@ expect_fail "promote bad version id" "invalid version id" "$root/scripts/deploy.
 expect_fail "promote bad version" "invalid version" "$root/scripts/deploy.sh" --promote 0123abcd-0000-4000-8000-000000000000 '1.0;rm'
 expect_fail "promote without token" "CLOUDFLARE_API_TOKEN not set" env -u CLOUDFLARE_API_TOKEN "$root/scripts/deploy.sh" --promote 0123abcd-0000-4000-8000-000000000000 9.8.7
 
+# Access gate predicate: a domain-based app or a dashboard "preview_worker" app for this Worker.
+gate() { "$root/scripts/deploy.sh" --access-check "$1" "$2" "$3"; }
+D='*-trail-braking-trainer.sub.workers.dev'
+gate '[{"domain":"*-trail-braking-trainer.sub.workers.dev"}]' "$D" tag1 && ok "access: domain app" || bad "access: domain app"
+gate '[{"domain":null,"destinations":[{"type":"preview_worker","worker_id":"tag1"}]}]' "$D" tag1 && ok "access: preview_worker app" || bad "access: preview_worker app"
+gate '[{"domain":null,"destinations":[{"type":"preview_worker","worker_id":"other"}]},{"domain":"x.aru.sh/admin"}]' "$D" tag1 && bad "access: other worker accepted" || ok "access: other worker rejected"
+gate '[]' "$D" tag1 && bad "access: none accepted" || ok "access: none rejected"
+
 ((fails == 0)) && echo "release tests passed" || { echo "$fails release test(s) failed" >&2; exit 1; }
